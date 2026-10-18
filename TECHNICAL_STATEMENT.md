@@ -1,37 +1,50 @@
 # Technical Statement
 
-## The problem
+## The problem, tied to Tavily's business
 
-People use a research agent so they don't have to read twenty pages. That only works if they can trust the answer without checking it. The starter agent can't earn that trust. It doesn't know today's date, so "this year" means nothing. Its sources come as a URL list at the end, so you can't tell which sentence a link supports, or whether a sentence is supported at all. And for "what changed" questions, most results are news coverage that repeats itself. Ten sites repeating one rumor look like ten sources.
+Tavily is paid when agents built on it run in production. The wall between a demo and production is not search quality; it is that a team cannot approve an agent whose answers nobody can audit. The starter shows why an answer can't be trusted: it doesn't know today's date, so "this year" is meaningless; its sources are a URL list at the end, so no one can tell which link backs which sentence, or whether a sentence is backed at all; and for "what changed" questions, ten sites repeating one rumor look like ten sources.
 
-The result is that the reader checks every claim by hand. An answer you have to check yourself saves no time, and that is where a research product loses its users. For a solo builder, it means an agent they can't ship. For an enterprise team, it means an agent that fails review because nobody can audit it.
+So the reader re-checks every claim by hand, and an answer you must re-check saves no time. That is the adoption problem: a solo builder can't ship an agent their users trust, and an enterprise can't put one past review. Trust is the gate to production, and production is what consumes credits.
 
 ## The approach
 
-Each claim in the answer must show the passage it came from, and claims about an organization are checked against that organization's own website.
+Every claim is traceable, and the agent guarantees four things. Each is checked in code against text already in memory, so the guarantees hold regardless of model quality.
 
-1. **Cite by ID.** Every passage Tavily returns gets a number (`[P1]`, `[P2]`...), and the model may only cite those numbers. A claim with no valid ID is dropped and listed. The model never has a chance to cite anything else, so there's nothing to check after the fact.
-2. **Go to the source.** When a claim is about one organization's own action (a launch, a deal, a price), the model names that organization's site. If no cited passage comes from it, the code runs one Tavily search restricted to that site (`include_domains`, `restrict`).
-3. **Check figures and dates.** Numbers in the claim are compared with the primary passage and with all cited passages. Today's date goes into the prompt. The model proposes a `start_date`, and code rejects it if it's malformed or in the future.
+1. **No invented sources.** A claim may only cite passage IDs (`[P1]`, `[P2]`...) from results Tavily actually returned. A claim with no valid ID is dropped and listed as dropped.
+2. **No misquoted sources.** A judge reads each (claim, passage) pair and must copy the exact sentence that states the claim. Code checks that sentence is really in the passage; a quote that isn't there is discarded, not trusted. This is what turns "traceable" into "checked": a topical hit on the organization's site no longer earns a primary label unless the page actually states the claim.
+3. **Who said it.** For a claim about one organization, one Tavily search restricted to that organization's own site (`include_domains`, `restrict`) decides whether the originator said it or only the press did.
+4. **No invented numbers or stale windows.** Figures in the claim are checked against the passages; today's date goes in the prompt, the proposed `start_date` is validated in code, and a claim whose sources all predate the window is flagged.
 
-Each claim gets one label: `PRIMARY`, `PRIMARY*` (the event is confirmed, a figure isn't), `REPORTED`, or `SYNTHESIS`. The answer stays short: one summary sentence and at most five claims.
+Each claim gets one label: `PRIMARY`, `PRIMARY*` (event stated, a figure only elsewhere), `REPORTED`, `SYNTHESIS` (market-level, no single owner), `CONTESTED` (a cited passage says something incompatible), or `UNSUPPORTED` (no cited passage states it). The answer stays short: one summary sentence and at most five claims.
 
 ## Thought process
 
-I chose this over three other approaches I worked through:
+I worked through and rejected several designs, each for a concrete reason:
 
-- **Ask the model to quote, then string-match the quote.** Breaks on reformatting and flags correct paraphrases.
-- **Re-search each claim and trust the relevance score.** Relevance is not support. A claim with a wrong date about a real event still ranks high.
-- **Rank sources by a list of "reputable" domains.** Subjective, never complete, and builders won't adopt a pattern that needs a hand-curated list.
+- **String-match a model-produced quote.** Brittle; flags correct paraphrases.
+- **Re-search each claim and trust the relevance score.** Relevance is not support; a wrong date on a real event still ranks high.
+- **Rank sources by a curated list of trusted domains.** Subjective, never complete, and builders won't adopt a pattern that needs curation.
+- **Count how many domains agree.** Forty reprints of one press release look like forty sources.
+- **Google's Check Grounding API.** The gold standard, but locked to Vertex AI, where Tavily's builders aren't.
 
-The key change was replacing "how many sites repeated it" with "did the source itself say it". Forty reprints of a press release don't outweigh the press release, so echo detection and domain lists aren't needed. Primary sources can still spin, so `PRIMARY` means "the organization said it", not "it is true". The README says this directly.
+The key move was replacing "how many sites repeated it" with "did the source itself say it", verified by a quoted span. `PRIMARY` means the organization said it, not that it is true: a boundary the write-up and the output both state.
 
 ## The value
 
-- **Technical:** unsupported claims can't reach the reader unnoticed, and every claim carries an audit record (passage, URL, date, label), saved as JSON. The trust logic (`grounding.py`) imports nothing from LangChain, so it works with any agent framework that calls Tavily.
-- **For builders:** a solo developer gets a review layer without building one, and an enterprise team gets the audit trail that review processes ask for.
-- **For Tavily:** it's a reusable recipe built on features most builders never use (`include_domains` with `restrict`, `chunks_per_source`, `start_date`, `published_date`). Answers people trust keep builders calling search. It costs at most 5 extra basic-depth credits per answer.
+- **Technical:** unsupported claims cannot reach the reader unnoticed, and every claim carries an audit record (passage, URL, date, label, quoted span) saved as JSON in `runs/`. The trust logic (`grounding.py`) imports nothing from LangChain, so the same functions work with the Vercel AI SDK, OpenAI Agents, or a hand-written loop.
+- **For builders:** a solo developer gets a review layer without building one; an enterprise gets the audit trail review processes demand.
+- **For Tavily:** a reusable recipe on features most builders never touch (`include_domains` + `restrict`, `chunks_per_source`, `start_date`), and an ecosystem loop: the per-claim labels map one-to-one onto Tavily's [Feedback endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/feedback) (`used_ids`, `used_citations`, per-result scores), which its docs call the signal it uses to improve ranking. Better labels for the user and better training signal for Tavily are the same data.
 
-## Verification and limits
+## Verification
 
-There are 17 offline tests, including the real `create_agent` loop driven by a scripted model and a fake Tavily client, which check the exact parameters sent to Tavily. Live behavior with Kimi-K2.6 and the eval results are reported separately in the README. Known limits: the model can guess an organization's site wrong (which causes a false miss, never a false confirmation), the anchor search checks topic rather than truth, and `published_date` is Tavily's estimate.
+- **38 offline tests** (`uv run pytest`), including the real `create_agent` loop with a scripted model and a fake Tavily client, which asserts the exact parameters sent to Tavily (`start_date`, `chunks_per_source`, `include_domains` + `restrict`), the judge (span verification, contradiction over support, invented spans discarded, judge failure reported not hidden), and the planted-error harness.
+- **Tavily client read directly** to confirm `start_date`, `include_domains`, `include_domains_mode` are named parameters and other keys pass through.
+- **Live finding:** the starter's default model, Kimi-K2.6, returned empty replies through `create_agent` on Nebius (`diag_model.py` reproduces it). `Qwen/Qwen3-235B-A22B-Instruct-2507` answered and tool-called correctly, so it is the recommended model, and a recovery path handles a model that ends without calling the answer tool. On the assignment's market-level question, all five claims came back `SYNTHESIS` (no single originator to anchor to) with every span verified; an organization-specific question exercises the `PRIMARY`/`REPORTED` path. `planted.py` measures the judge's catch rate on deliberately broken claims.
+
+## Limits
+
+Every label is about the passages, never about the world. The agent does not check truth (a press release can be wrong) or currency (a price can change after the crawl); it does not check completeness (a missing change isn't flagged); the judge is itself a model, made checkable by the quoted span but not independent; "the organization's own site" is the wrong primary source for funding, regulation and compliance questions (the claim-kind table in the README is the planned fix); a wrong domain guess becomes `REPORTED`, never a false `PRIMARY`; and `published_date` is Tavily's estimate.
+
+## Observability
+
+`grounding.py` emits a structured `Report`; the agent writes a full JSON record per run to `runs/`. With `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` set, LangChain traces the agent loop, and the anchor search and judge (which run outside that loop) are decorated with LangSmith's `@traceable`, so they appear in the same trace. The decorator is a no-op when langsmith is not installed, so it is never a hard dependency.

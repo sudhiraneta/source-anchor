@@ -23,7 +23,8 @@ from research_agent import DEFAULT_MODEL, console, make_clients, run_research, t
 
 app = typer.Typer(add_completion=False)
 COLUMNS = ["claims_shown", "claims_dropped_no_valid_passage", "primary", "primary-partial",
-           "reported", "synthesis", "flagged_unsupported_figure", "flagged_stale", "anchor_searches"]
+           "reported", "synthesis", "contested", "unsupported", "judged",
+           "flagged_unsupported_figure", "flagged_stale", "anchor_searches"]
 
 
 @app.command()
@@ -55,9 +56,11 @@ def main(
     table.add_row("TOTAL", *[str(totals[c]) for c in COLUMNS], "")
     console.print(table)
     shown = totals["claims_shown"] or 1
+    anchored = totals["primary"] + totals["primary-partial"]
     console.print(
-        f"Anchored to the organization's own site: {totals['primary'] + totals['primary-partial']}/{totals['claims_shown']} "
-        f"({(totals['primary'] + totals['primary-partial']) / shown:.0%}). "
+        f"Stated on the organization's own site (primary): {anchored}/{totals['claims_shown']} "
+        f"({anchored / shown:.0%}). "
+        f"Contested: {totals['contested']}. Unsupported: {totals['unsupported']}. "
         f"Dropped for no valid passage: {totals['claims_dropped_no_valid_passage']}. Records in {out_dir}/"
     )
 

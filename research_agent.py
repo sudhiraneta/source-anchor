@@ -39,6 +39,18 @@ from grounding import (
     render_for_model,
 )
 
+# LangSmith tracing, if installed and LANGSMITH_TRACING is set. The agent loop
+# is traced by LangChain automatically; these decorators put the anchor search
+# and the judge, which run outside that loop, into the same trace. No-op when
+# langsmith is absent, so it is never a hard dependency.
+try:
+    from langsmith import traceable
+except ImportError:  # pragma: no cover
+    def traceable(*d_args: Any, **d_kwargs: Any) -> Any:
+        def wrap(fn: Any) -> Any:
+            return fn
+        return wrap(d_args[0]) if d_args and callable(d_args[0]) else wrap
+
 load_dotenv()
 console = Console()
 app = typer.Typer(add_completion=False)
@@ -121,6 +133,7 @@ def build_search_tool(client: Any, registry: PassageRegistry, today: date, log: 
 def build_anchor_search(client: Any, registry: PassageRegistry, log: dict) -> Callable[[str, str], list[Passage]]:
     """One basic search per claim, restricted to the organization's own site."""
 
+    @traceable(name="anchor_search", run_type="retriever")
     def anchor(claim: str, site: str) -> list[Passage]:
         log["searches"].append({"query": claim, "site": site, "kind": "anchor"})
         response = client.search(
@@ -164,6 +177,7 @@ class JudgeVerdicts(BaseModel):
 def build_judge(model: Any, log: dict) -> Callable[[list[JudgeItem]], list[Verdict]]:
     """One batched call: every (claim, passage) pair judged in a single request."""
 
+    @traceable(name="support_judge", run_type="chain")
     def judge(items: list[JudgeItem]) -> list[Verdict]:
         if not items:
             return []
