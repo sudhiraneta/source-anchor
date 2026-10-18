@@ -155,8 +155,16 @@ JUDGE_PROMPT = """You check whether a passage states a claim. For each item, rea
 Use no outside knowledge, even if you believe the claim is true.
 
 For each item return:
-- label: "supports" if the passage states the claim; "contradicts" if the passage states something
-  incompatible with it (a different number, date, or actor); "not_addressed" otherwise.
+- label:
+  - "supports" if the passage states the claim, or states it with extra detail. A passage that gives
+    MORE than the claim still supports it: if the claim says "$2 input, $10 output" and the passage says
+    "$2 input, $0.10 cached, $10 output", that is support, not contradiction. Extra fields, finer tiers,
+    or additional facts never make a contradiction.
+  - "contradicts" ONLY if, for a fact the claim states, the passage gives a directly incompatible value:
+    a different number for the SAME quantity, a different date for the SAME event, or a different actor
+    for the SAME action. If you cannot point to the claim's value and the passage's conflicting value
+    side by side, it is not a contradiction.
+  - "not_addressed" if the passage neither states nor conflicts with the claim.
 - span: the exact sentence copied from that passage that justifies your label. Copy it character for
   character. Leave it empty only for not_addressed.
 
