@@ -71,6 +71,8 @@ I also asked whether each piece had evidence behind it. That separated what we h
 - `research_agent.py` on the assignment question: 5 claims, all `SYNTHESIS`, every span verified. Confirmed that a market-level question never fires the primary-source path, which the README now says plainly.
 - `research_agent.py` on "What did OpenAI announce for its API this year?": 1 `PRIMARY` (openai.com, quoted headline), 3 `REPORTED`, 1 `CONTESTED`. Reading the `CONTESTED` claim against its passage showed the judge was wrong: the passage supported the claim with extra detail. Recorded as a finding with its fix.
 - `planted.py` over both runs: 21/24 planted errors caught (88%). Numbers 10/10, years 5/7, actors 4/5. The misses point at a code-level check for years and names.
+- Re-ran the OpenAI question after the judge-prompt fix. It did NOT resolve the over-flagging: three of five claims came back `CONTESTED`, at least two wrong (a passage that states the claim; a passage that just lists extra pricing tiers). Conclusion: a prompt nudge can't reliably stop an LLM judge from calling compatible-but-different a contradiction.
+- Designed a code-checkable contradiction gate (judge names the conflicting value pair; code requires a value the passage lacks). On this run it fixes all three false positives, but it also downgrades a swapped-actor contradiction whose numbers match, lowering planted-actor catch. That trade-off needs live iteration, so I did NOT ship it before the deadline; reframed `CONTESTED` as "inspect, not verdict" and documented the gate under Next. Chose a measured limitation over an untested heuristic.
 - The `REPORTED` output showed a stale "figures not on own site" line left over from a rejected primary. Fixed with a regression test.
 
 ## Full chat

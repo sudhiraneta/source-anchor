@@ -13,11 +13,7 @@ uv run planted.py runs/  # catch rate on deliberately broken claims (no credits)
 
 Same question, same model. The starter returns a paragraph with links at the end; you can't tell which link backs which sentence, or whether a sentence is backed at all.
 
-**Starter** (`starter_agent.py`, *"What did OpenAI announce for its API this year?"*):
-
-```
-<paste the starter's real output here>
-```
+**Starter** (`starter_agent.py`): a single prose paragraph that ends with a flat list of source URLs. There is no mapping from any sentence to any source, no indication of which claims the organization itself stated versus which a third party reported, and no flag when a sentence has no backing at all. To reproduce: `uv run starter_agent.py "What did OpenAI announce for its API this year?"`.
 
 **Source Anchor**, same question (real run, `Qwen/Qwen3-235B-A22B-Instruct-2507`, abridged):
 
@@ -55,7 +51,7 @@ Every label is about the passages, never about the world. The agent cannot tell 
 | `PRIMARY*` | The own page states the event; a figure comes only from elsewhere. |
 | `REPORTED` | Third parties state it; the own site does not. |
 | `SYNTHESIS` | A market-level statement with no single owner, stated by a cited passage. |
-| `CONTESTED` | A cited passage states something incompatible. Both are shown. |
+| `CONTESTED` | A cited passage *appears* to conflict — a flag to inspect, not a proof the claim is wrong. The judge over-fires here (see Live results); both passages are shown so a person decides. |
 | `UNSUPPORTED` | No cited passage states the claim. |
 
 ## Design decisions, including the rejected ones
@@ -73,16 +69,23 @@ The judge is what turns "traceable" into "checked": without it, a topical hit on
 
 ## Live results
 
-Both runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 returned empty replies through `create_agent`; `diag_model.py` reproduces it). Records in `runs/`.
+Runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 returned empty replies through `create_agent`; `diag_model.py` reproduces it). Records in `runs/`.
 
-- **Market question** (*"What changed in the AI search market this year?"*): 5 claims, all `SYNTHESIS`. A market-wide question has no originator, so the primary path correctly never fires. Every claim's span was verified; no figure invented.
-- **Organization question** (*"What did OpenAI announce..."*): 1 `PRIMARY` (openai.com, confirmed by its own headline), 3 `REPORTED`, 1 `CONTESTED`. This exercises the full label set.
-- **Catch rate** (`planted.py`, 24 claims broken on purpose across both runs): **21/24 (88%)** — changed numbers 10/10, negations 2/2, swapped actors 4/5, shifted years 5/7.
+**What is solid, and proven live:**
 
-**Findings from reading the live output (the point of the labels):**
+- **Traceability.** Across every run, no claim cited a source that wasn't returned, no claim carried a figure absent from its passages, and every shown span was verified present in its passage. Claims the model couldn't ground were dropped and listed.
+- **The primary-source anchor works.** On *"What did OpenAI announce for its API this year?"*, claim 1 (the Agents API beta) is labelled `PRIMARY` because the restricted search on `openai.com` returned the page whose own headline states it.
+- **Changed-number detection.** `planted.py` broke 24 claims on purpose: **21/24 caught (88%)** — changed numbers **10/10**, negations 2/2, swapped actors 4/5, shifted years 5/7.
+- **Market questions behave correctly.** *"What changed in the AI search market this year?"* returned five `SYNTHESIS` claims: a market-wide question has no originator, so the primary path correctly never fires.
 
-1. **A false `CONTESTED`.** Claim 4 said "$2 input, $10 output"; the openai.com passage said "$2 input, $0.10 cached, $2.50 cache write, $10 output" — support with extra detail, not a contradiction. The judge got it wrong. Fixed: the judge prompt now states that extra detail is never a contradiction, only a directly incompatible value for the same quantity. Re-run the organization question to confirm claim 4 becomes `PRIMARY`.
-2. **Numbers beat years and names.** The judge catches changed magnitudes (10/10) better than a year buried in a citation or a swapped actor (5/7, 4/5). Numbers also get a code-level check; years and actors don't yet. That code check is the next fix.
+**What is noisy, stated plainly: the `CONTESTED` label over-fires.** On the OpenAI re-run, three of five claims were marked `CONTESTED` and at least two are wrong:
+
+- Claim 2 (Sol/Luna released): the `openai.com` passage actually *states* it ("expanding our GPT-6 family with GPT-6 Sol and GPT-6 Luna"); the judge flagged an unrelated sentence about GPT-6 Astra as the conflict.
+- Claim 3 (pricing): the claim's "$2 in / $10 out" is *contained in* a passage that merely lists more tiers ("$2 input, $0.10 cached, $2.50 cache write, $10 output"). That is elaboration, not conflict.
+
+A prompt instruction ("extra detail is not a contradiction") reduced but did not eliminate this; an LLM judge still calls compatible-but-different passages a contradiction. So `CONTESTED` is presented as **"inspect this"**, with both passages shown, not as a verdict. The honest split: the judge is reliable at *absence* (unsupported, dropped) and at *changed magnitudes*, and unreliable at *conflict*.
+
+**The designed fix, and why it isn't shipped.** Make a contradiction code-checkable: have the judge name the claim value and the conflicting passage value, and in code require a value the passage genuinely lacks. On this run that fixes all three false positives — but it also downgrades a swapped-actor contradiction whose numbers still match the passage, which would lower the planted-actor catch rate. That trade-off needs live iteration I couldn't finish before the deadline, and shipping an untested heuristic that moves the error around is the wrong call. It is specified under Next.
 
 ## What it does not do
 
@@ -126,7 +129,7 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces
 
 ## Next
 
-1. **The two fixes the live run surfaced:** the judge prompt change (done — re-run to confirm) and a code-level check for the named organization and stated year, the way figures are already checked.
+1. **Make `CONTESTED` code-checkable.** Have the judge name the claim value and the conflicting passage value; in code, require a value the passage genuinely lacks before showing a contradiction. This fixes the over-firing above; measure it against the planted-actor case before shipping, since it can also downgrade a real actor/date swap whose numbers match.
 2. **Claim kinds:** one field per claim (`announcement`, `funding`, `regulation`, `compliance`, `live_state`, `market`) and a policy table that picks the right primary source per kind.
 3. **Feedback to Tavily** after each run (`used_ids`, per-result verdicts); text fields opt-in.
 4. **Show the searched domain** on `REPORTED`, so "they didn't say it" is distinct from "we looked in the wrong place".
