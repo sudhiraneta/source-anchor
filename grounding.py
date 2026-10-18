@@ -283,8 +283,11 @@ def apply_verdicts(claims: list[CheckedClaim], verdicts: Iterable[Verdict]) -> N
             if claim.primary.id in supported_ids:
                 claim.status = Status.PRIMARY_PARTIAL if claim.figures_not_in_primary else Status.PRIMARY
             else:
+                # The own-site page was on topic but did not state the claim: there is
+                # no primary, so the figure comparison against it no longer applies.
                 claim.status = Status.REPORTED
                 claim.primary = None
+                claim.figures_not_in_primary = []
 
 
 def check_claims(

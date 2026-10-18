@@ -245,6 +245,8 @@ def test_primary_downgraded_when_own_site_does_not_state_claim():
         registry=registry,
     )
     assert report.claims[0].status is Status.REPORTED and report.claims[0].primary is None
+    # Seen live: a rejected primary must not leave a stale "figures not on own site" line.
+    assert report.claims[0].figures_not_in_primary == []
 
 
 def test_contradiction_wins_over_support():

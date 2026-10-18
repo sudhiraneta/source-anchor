@@ -108,26 +108,33 @@ Rates from Tavily's [credits page](https://docs.tavily.com/documentation/api-cre
 - **Credit rates and the feedback endpoint** checked against Tavily's docs.
 - **Live finding:** Kimi-K2.6 (the starter's default) returned empty replies through `create_agent` on Nebius. `Qwen/Qwen3-235B-A22B-Instruct-2507` answered and tool-called correctly in `diag_model.py`. The recovery path exists because of this.
 
-**Live results.** Run on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 returned empty replies through `create_agent`; see the recovery path).
+**Live results.** Both runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 returned empty replies through `create_agent`; `diag_model.py` reproduces it). Records are in `runs/`.
 
-On the assignment question, *"What changed in the AI search market this year?"* (16.9s, one search, 5 claims, 0 dropped, judge ran on all 5, `judge_error: null`):
+**Run 1, the assignment question:** *"What changed in the AI search market this year?"* (16.9s, one search, 5 claims, 0 dropped). Every claim came back **`SYNTHESIS`**: a market-wide question has no originator to anchor to, so the primary-source path never fires. The judge verified all 5 claims against quoted spans found in the passages; no figure was invented.
 
-- Every claim came back **`SYNTHESIS`**: the model attached no single organization, because a market-wide question has no originator to anchor to. This is the documented case, not a failure, and it means the assignment's own question does not exercise the `PRIMARY`/`REPORTED` path.
-- **The judge verified every claim against a real span.** For example, "ChatGPT processes 2.5 billion queries per day" is backed by the exact sentence quoted from the source and confirmed present in the passage by code. No figure was invented; nothing was dropped or stale.
+**Run 2, an organization question:** *"What did OpenAI announce for its API this year?"* (5 claims, 0 dropped, 5 anchor searches). This exercises the labels Run 1 could not:
 
-To exercise the primary-source anchoring, run an organization-specific question, which is why `eval_questions.txt` leads with one:
+| # | Label | What happened |
+|---|---|---|
+| 1 | **`PRIMARY`** | `openai.com` states the Agents API beta; the quoted span is the page's own headline. The primary-source path works live. |
+| 2, 3, 5 | **`REPORTED`** | Only `powerdrill.ai` states these GPT-6 Sol/Luna claims. The restricted search on `openai.com` returned nothing that states them. |
+| 4 | **`CONTESTED`**, wrongly | See the judge finding below. |
 
-```
-uv run research_agent.py "What did OpenAI announce for its API this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
-```
+**Catch rate (`planted.py`, 24 planted errors across both runs): 21/24 caught, 88%.**
 
-Then the catch-rate number, which does not need live search:
+| Planted error | Caught |
+|---|---|
+| Changed number | **10/10** |
+| Negated | **2/2** |
+| Swapped actor (OpenAI → Anthropic) | 4/5 |
+| Shifted year | 5/7 |
 
-```
-uv run planted.py runs/ --model Qwen/Qwen3-235B-A22B-Instruct-2507
-```
+**Two findings from the live data, reported rather than hidden:**
 
-`planted.py` result: _paste "Caught X/Y planted errors" here_ — the number-heavy synthesis claims above make good planted-error inputs, since a mutated figure no longer appears in its passage.
+1. **The judge over-flags passages that contain more detail than the claim.** Claim 4 says GPT-6.1 Sol is "$2 per million input, $10 per million output". The `developers.openai.com` passage says "$2 input, $0.10 cached input, $2.50 cache write, and $10 output". That *supports* the claim; the extra pricing tiers are detail, not contradiction. The judge marked it `contradicts`, so the claim shows as `CONTESTED` when it should be `PRIMARY`. A false contradiction is the safe direction (it sends the reader to look, never hides a problem), but it is still wrong, and the fix is one line in the judge prompt: additional detail in the passage is not a contradiction.
+2. **The judge catches changed numbers far better than changed years or names.** 10/10 on numbers; 5/7 on years and 4/5 on actors. All three misses were a year buried in a citation or an actor swap the judge read past while the magnitudes still matched. Number checks are also done in code, so numbers get two chances; years and actors get one. A code-level check for the named organization and the stated year is the obvious next step.
+
+Both findings came from reading the live output against the passages, which is what the labels are for.
 
 ## Eval
 
@@ -140,6 +147,7 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces
 
 ## Next
 
+0. **Two fixes the live run asked for.** Tell the judge that extra detail in a passage is not a contradiction (claim 4 above), and check the named organization and stated year in code the way figures already are (the three planted misses). Both are small; neither is done.
 1. **Claim kinds.** One field per claim (`announcement`, `funding`, `regulation`, `compliance`, `live_state`, `market`) and a policy table that picks the right primary source per kind, shows "as of" dates for live state, and requires two independent sources for market claims. Same four checks, right anchor per question.
 2. **Feedback to Tavily** after each run: `used_ids`, per-result support verdicts, primary flag. Text fields opt-in.
 3. **Show the searched domain** on every `REPORTED`, so the reader can tell "they didn't say it" from "we looked in the wrong place".

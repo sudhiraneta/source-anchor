@@ -67,10 +67,11 @@ I also asked whether each piece had evidence behind it. That separated what we h
 
 ## 8. What I ran live
 
-*(fill in after running with keys)*
-- Starter on the assignment question: output saved as the "before".
-- `research_agent.py` on the same question: does Kimi follow the cite-by-ID format? Is `published_date` returned?
-- `eval.py` table and a hand check of 10 `PRIMARY` claims.
+- `diag_model.py`: Kimi-K2.6 returned empty content; Qwen3-235B answered and tool-called. Switched the recommended model.
+- `research_agent.py` on the assignment question: 5 claims, all `SYNTHESIS`, every span verified. Confirmed that a market-level question never fires the primary-source path, which the README now says plainly.
+- `research_agent.py` on "What did OpenAI announce for its API this year?": 1 `PRIMARY` (openai.com, quoted headline), 3 `REPORTED`, 1 `CONTESTED`. Reading the `CONTESTED` claim against its passage showed the judge was wrong: the passage supported the claim with extra detail. Recorded as a finding with its fix.
+- `planted.py` over both runs: 21/24 planted errors caught (88%). Numbers 10/10, years 5/7, actors 4/5. The misses point at a code-level check for years and names.
+- The `REPORTED` output showed a stale "figures not on own site" line left over from a rejected primary. Fixed with a regression test.
 
 ## Full chat
 
