@@ -73,15 +73,25 @@ def plant(claim: str) -> list[Mutation]:
     return out
 
 
+def record_files(path: Path) -> list[Path]:
+    """Every run record under path. Searches subfolders, so runs/ works directly."""
+    if path.is_dir():
+        return sorted(f for f in path.rglob("*.json") if f.is_file())
+    return [path] if path.is_file() else []
+
+
+def load_records(path: Path) -> list[dict]:
+    records = []
+    for f in record_files(path):
+        try:
+            records.append(json.loads(f.read_text()))
+        except (OSError, json.JSONDecodeError) as exc:
+            console.print(f"[yellow]skipped {f.name}: {exc}[/yellow]")
+    return records
+
+
 def load_claims(path: Path) -> list[dict]:
-    files = sorted(path.glob("*.json")) if path.is_dir() else [path]
-    claims: list[dict] = []
-    for f in files:
-        record = json.loads(f.read_text())
-        for claim in record.get("claims", []):
-            if claim.get("evidence"):
-                claims.append(claim)
-    return claims
+    return [c for r in load_records(path) for c in r.get("claims", []) if c.get("evidence")]
 
 
 def rebuild(claim: dict, text: str, passages: dict[str, Passage]) -> CheckedClaim | None:
@@ -93,11 +103,10 @@ def rebuild(claim: dict, text: str, passages: dict[str, Passage]) -> CheckedClai
 
 
 def passages_from(record_dir: Path) -> dict[str, Passage]:
-    """Rebuild passages from the recorded evidence (id, url, published, span text)."""
+    """Rebuild passages from the recorded evidence (id, url, published, text)."""
     passages: dict[str, Passage] = {}
-    files = sorted(record_dir.glob("*.json")) if record_dir.is_dir() else [record_dir]
-    for f in files:
-        for claim in json.loads(f.read_text()).get("claims", []):
+    for record in load_records(record_dir):
+        for claim in record.get("claims", []):
             spans = {v["passage_id"]: v.get("span", "") for v in claim.get("verdicts", [])}
             for e in claim.get("evidence", []):
                 text = spans.get(e["id"]) or e.get("text", "")
@@ -114,10 +123,21 @@ def main(
     records: Annotated[Path, typer.Argument(help="runs/ record file or folder")],
     model: Annotated[str, typer.Option()] = DEFAULT_MODEL,
 ) -> None:
+    if not record_files(records):
+        console.print(
+            f"[red]No run records at {records}[/red]\n"
+            "Run the agent at least once first, which writes runs/<timestamp>.json:\n"
+            '  uv run research_agent.py "What changed in the AI search market this year?"'
+        )
+        raise typer.Exit(code=1)
+
     claims = load_claims(records)
     passages = passages_from(records)
     if not claims or not passages:
-        console.print("[red]No claims with recorded passage text found. Run the agent first.[/red]")
+        console.print(
+            "[red]Found run records, but no claims with passage text.[/red]\n"
+            "Records written before this version lack it; run the agent again to produce one."
+        )
         raise typer.Exit(code=1)
 
     chat_model, _ = make_clients(model)

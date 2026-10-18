@@ -45,3 +45,23 @@ def test_round_trip_from_a_run_record(tmp_path: Path):
     assert rebuilt is not None
     assert rebuilt.primary is not None and rebuilt.primary.id == "P4"
     assert len(rebuilt.evidence) == 2 and "400" not in rebuilt.text
+
+
+def test_record_files_handles_missing_dir_and_subfolders(tmp_path: Path):
+    from planted import record_files
+
+    assert record_files(tmp_path / "runs") == []  # missing path: no crash
+    (tmp_path / "eval-1").mkdir()
+    (tmp_path / "eval-1" / "01.json").write_text("{}")
+    (tmp_path / "top.json").write_text("{}")
+    assert len(record_files(tmp_path)) == 2  # finds records in subfolders too
+
+
+def test_bad_json_is_skipped_not_fatal(tmp_path: Path):
+    (tmp_path / "broken.json").write_text("{not json")
+    (tmp_path / "ok.json").write_text(json.dumps({"claims": [
+        {"text": "X raised $5 million.", "evidence": [
+            {"id": "P1", "url": "https://a.example/x", "published": "2026-01-01", "text": "X raised $5 million."}]}
+    ]}))
+    assert len(load_claims(tmp_path)) == 1
+    assert set(passages_from(tmp_path)) == {"P1"}
