@@ -245,8 +245,9 @@ def make_clients(model_name: str) -> tuple[Any, Any]:
     from tavily import TavilyClient
 
     for key, where in (("TAVILY_API_KEY", "https://app.tavily.com"), ("NEBIUS_API_KEY", "https://tokenfactory.nebius.com")):
-        if not os.getenv(key):
-            console.print(f"[bold red]Missing {key}[/bold red] (create one at {where})")
+        value = (os.getenv(key) or "").strip()
+        if not value or value.endswith("..."):  # empty, or still the .env.example placeholder
+            console.print(f"[bold red]Missing {key}[/bold red] (create one at {where}, then add it to .env)")
             raise typer.Exit(code=1)
     return ChatNebius(model=model_name), TavilyClient()
 
