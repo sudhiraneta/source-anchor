@@ -4,6 +4,7 @@ shape (results[].url/title/content/published_date); the text is invented."""
 from datetime import date
 
 from grounding import (
+    Verdict,
     DraftClaim,
     PassageRegistry,
     Status,
@@ -184,3 +185,108 @@ def test_summary_counts():
     )
     s = report.summary()
     assert s["claims_shown"] == 1 and s["claims_dropped_no_valid_passage"] == 1 and s["synthesis"] == 1
+
+
+# ---- judge
+
+
+def judged(verdicts, *, drafts=None, anchor=None, registry=None):
+    """Run check_claims with a fake judge returning the given verdicts."""
+    registry = registry or make_registry(NEWS)
+    drafts = drafts or [DraftClaim("Nebius agreed to acquire Tavily for about $400 million.", ["P1"], "nebius.com")]
+    seen: dict = {}
+
+    def judge(items):
+        seen["items"] = items
+        return verdicts(items) if callable(verdicts) else verdicts
+
+    report = check_claims(drafts, registry, anchor_search=anchor, judge=judge)
+    return report, seen.get("items", [])
+
+
+def test_judge_sees_primary_passage_first():
+    registry = make_registry(NEWS)
+    report, items = judged(
+        [],
+        anchor=lambda c, s: registry.add_response(PRIMARY),
+        registry=registry,
+    )
+    assert items[0].passage.domain == "nebius.com"  # primary ranked ahead of press
+    assert items[0].claim_index == 0 and len(items) <= 3
+
+
+def test_supporting_span_from_primary_gives_primary_partial():
+    registry = make_registry(NEWS)
+    report, items = judged(
+        lambda its: [
+            Verdict(0, p.id, "supports", "agreement to acquire Tavily")
+            if p.domain == "nebius.com"
+            else Verdict(0, p.id, "supports", "about $400 million")
+            for p in (i.passage for i in its)
+        ],
+        anchor=lambda c, s: registry.add_response(PRIMARY),
+        registry=registry,
+    )
+    claim = report.claims[0]
+    assert claim.judged and claim.status is Status.PRIMARY_PARTIAL
+    assert claim.figures_not_in_primary == ["400"]
+
+
+def test_primary_downgraded_when_own_site_does_not_state_claim():
+    """The fix for relevance-is-not-support: a topical hit alone no longer earns PRIMARY."""
+    registry = make_registry(NEWS)
+    report, _ = judged(
+        lambda its: [
+            Verdict(0, i.passage.id, "not_addressed" if i.passage.domain == "nebius.com" else "supports",
+                    "" if i.passage.domain == "nebius.com" else "about $400 million")
+            for i in its
+        ],
+        anchor=lambda c, s: registry.add_response(PRIMARY),
+        registry=registry,
+    )
+    assert report.claims[0].status is Status.REPORTED and report.claims[0].primary is None
+
+
+def test_contradiction_wins_over_support():
+    report, _ = judged(
+        lambda its: [
+            Verdict(0, its[0].passage.id, "supports", "about $400 million"),
+            Verdict(0, its[1].passage.id, "contradicts", "Token Factory platform"),
+        ],
+        drafts=[DraftClaim("Nebius agreed to acquire Tavily for about $400 million.", ["P1", "P2"], None)],
+    )
+    claim = report.claims[0]
+    assert claim.status is Status.CONTESTED and claim.flagged
+    assert len(claim.contradicting) == 1
+
+
+def test_claim_with_no_support_is_unsupported():
+    report, _ = judged(lambda its: [Verdict(0, i.passage.id, "not_addressed") for i in its])
+    assert report.claims[0].status is Status.UNSUPPORTED and report.claims[0].flagged
+
+
+def test_invented_span_is_discarded():
+    """A judge quoting text that isn't in the passage is not trusted."""
+    report, _ = judged(lambda its: [Verdict(0, i.passage.id, "supports", "a sentence never published") for i in its])
+    assert report.claims[0].status is Status.UNSUPPORTED and report.claims[0].support == []
+
+
+def test_verdict_for_unknown_passage_or_claim_is_ignored():
+    report, _ = judged([Verdict(0, "P99", "supports", "x"), Verdict(7, "P1", "supports", "about $400 million")])
+    assert report.claims[0].support == [] and report.claims[0].status is Status.UNSUPPORTED
+
+
+def test_judge_failure_keeps_provenance_labels():
+    def boom(items):
+        raise RuntimeError("judge offline")
+
+    report = check_claims(
+        [DraftClaim("Nebius agreed to acquire Tavily.", ["P1"], None)], make_registry(NEWS), judge=boom
+    )
+    assert report.claims[0].status is Status.SYNTHESIS and not report.claims[0].judged
+    assert report.judge_error and "judge offline" in report.judge_error
+
+
+def test_no_judge_leaves_claims_unjudged():
+    report = check_claims([DraftClaim("Nebius agreed to acquire Tavily.", ["P1"], None)], make_registry(NEWS))
+    assert not report.claims[0].judged and report.summary()["judged"] == 0

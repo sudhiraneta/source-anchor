@@ -14,13 +14,13 @@ import os
 import time
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
 import typer
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from rich.console import Console
@@ -29,10 +29,12 @@ from rich.text import Text
 
 from grounding import (
     DraftClaim,
+    JudgeItem,
     Passage,
     PassageRegistry,
     Report,
     Status,
+    Verdict,
     check_claims,
     render_for_model,
 )
@@ -134,6 +136,58 @@ def build_anchor_search(client: Any, registry: PassageRegistry, log: dict) -> Ca
     return anchor
 
 
+# ------------------------------------------------------------------- judge
+
+JUDGE_PROMPT = """You check whether a passage states a claim. For each item, read ONLY that item's passage.
+Use no outside knowledge, even if you believe the claim is true.
+
+For each item return:
+- label: "supports" if the passage states the claim; "contradicts" if the passage states something
+  incompatible with it (a different number, date, or actor); "not_addressed" otherwise.
+- span: the exact sentence copied from that passage that justifies your label. Copy it character for
+  character. Leave it empty only for not_addressed.
+
+Return one verdict per item, with the item's id.
+"""
+
+
+class JudgeVerdict(BaseModel):
+    id: int = Field(description="The item's id.")
+    label: Literal["supports", "contradicts", "not_addressed"]
+    span: str = Field(default="", description="Exact sentence copied from the passage.")
+
+
+class JudgeVerdicts(BaseModel):
+    verdicts: list[JudgeVerdict]
+
+
+def build_judge(model: Any, log: dict) -> Callable[[list[JudgeItem]], list[Verdict]]:
+    """One batched call: every (claim, passage) pair judged in a single request."""
+
+    def judge(items: list[JudgeItem]) -> list[Verdict]:
+        if not items:
+            return []
+        body = "\n\n".join(
+            f"[item {n}]\nCLAIM: {item.claim}\nPASSAGE ({item.passage.domain}): {item.passage.text}"
+            for n, item in enumerate(items)
+        )
+        structured = model.with_structured_output(JudgeVerdicts, method="function_calling")
+        result = structured.invoke([SystemMessage(JUDGE_PROMPT), HumanMessage(body)])
+        log["judge_items"] = len(items)
+        return [
+            Verdict(
+                claim_index=items[v.id].claim_index,
+                passage_id=items[v.id].passage.id,
+                label=v.label,
+                span=v.span,
+            )
+            for v in result.verdicts
+            if 0 <= v.id < len(items)
+        ]
+
+    return judge
+
+
 # ------------------------------------------------------------------- agent
 
 
@@ -175,6 +229,7 @@ def run_research(
     client: Any,
     today: date | None = None,
     on_search: Callable[[str, str | None], None] | None = None,
+    check_support: bool = True,
 ) -> tuple[ResearchAnswer, Report, dict]:
     today = today or date.today()
     registry = PassageRegistry()
@@ -202,17 +257,25 @@ def run_research(
 
     drafts = [DraftClaim(c.text, c.passage_ids, c.source_domain) for c in answer.claims[:MAX_CLAIMS]]
     window = min(log["window_starts"], default=None)
-    report = check_claims(drafts, registry, build_anchor_search(client, registry, log), window)
+    report = check_claims(
+        drafts,
+        registry,
+        build_anchor_search(client, registry, log),
+        window,
+        judge=build_judge(model, log) if check_support else None,
+    )
     return answer, report, log
 
 
 # ----------------------------------------------------------------- display
 
 BADGE = {
-    Status.PRIMARY: ("PRIMARY", "bold green", "confirmed on the organization's own site"),
-    Status.PRIMARY_PARTIAL: ("PRIMARY*", "bold yellow", "own site confirms the event, not every figure"),
-    Status.REPORTED: ("REPORTED", "bold magenta", "only third-party sources; own site did not confirm"),
-    Status.SYNTHESIS: ("SYNTHESIS", "bold blue", "market-level statement, backed by cited passages"),
+    Status.PRIMARY: ("PRIMARY", "bold green", "the organization's own site states this"),
+    Status.PRIMARY_PARTIAL: ("PRIMARY*", "bold yellow", "own site states the event, not every figure"),
+    Status.REPORTED: ("REPORTED", "bold magenta", "third-party sources state this; the own site does not"),
+    Status.SYNTHESIS: ("SYNTHESIS", "bold blue", "market-level statement, stated by a cited passage"),
+    Status.CONTESTED: ("CONTESTED", "bold red", "a cited passage states something incompatible"),
+    Status.UNSUPPORTED: ("UNSUPPORTED", "bold red", "no cited passage states this"),
 }
 
 
@@ -235,6 +298,10 @@ def print_report(question: str, answer: ResearchAnswer, report: Report) -> None:
             console.print(_source_line(claim.primary), highlight=False, markup=False, style="green")
         for p in claim.evidence:
             console.print(_source_line(p), highlight=False, markup=False, style="dim")
+        for verdict in claim.contradicting:
+            console.print(f"  [red]contradicted by {verdict.passage_id}:[/red] “{_excerpt(verdict.span)}”", highlight=False)
+        for verdict in claim.supporting[:1]:
+            console.print(f"  [green]stated in {verdict.passage_id}:[/green] “{_excerpt(verdict.span)}”", highlight=False)
         if claim.figures_not_in_primary:
             console.print(f"  [yellow]figures not on the organization's site: {', '.join(claim.figures_not_in_primary)}[/yellow]")
         if claim.figures_not_in_any_source:
@@ -250,6 +317,8 @@ def print_report(question: str, answer: ResearchAnswer, report: Report) -> None:
     if report.window_start:
         footer += f" · window from {report.window_start}"
     console.print(f"\n[dim]{footer}[/dim]")
+    if report.judge_error:
+        console.print(f"[yellow]support check did not run ({report.judge_error}); labels show provenance only[/yellow]")
     for d in report.dropped:
         console.print(f"[dim]  dropped: {d.text}[/dim]", highlight=False)
 
@@ -262,17 +331,26 @@ def to_record(question: str, model_name: str, answer: ResearchAnswer, report: Re
         "seconds": round(seconds, 1),
         "summary": answer.summary,
         "metrics": report.summary(),
+        "judge_error": report.judge_error,
         "window_start": report.window_start.isoformat() if report.window_start else None,
         "searches": log["searches"],
         "claims": [
             {
                 "text": c.text,
                 "status": c.status.value,
-                "evidence": [{"id": p.id, "url": p.url, "published": str(p.published)} for p in c.evidence],
+                # text is kept so planted.py can re-judge without new searches
+                "evidence": [
+                    {"id": p.id, "url": p.url, "published": str(p.published), "text": p.text}
+                    for p in ([c.primary] if c.primary else []) + c.evidence
+                ],
                 "primary_url": c.primary.url if c.primary else None,
                 "figures_not_in_primary": c.figures_not_in_primary,
                 "figures_not_in_any_source": c.figures_not_in_any_source,
                 "stale": c.stale,
+                "judged": c.judged,
+                "verdicts": [
+                    {"passage_id": v.passage_id, "label": v.label, "span": v.span} for v in c.support
+                ],
             }
             for c in report.claims
         ],
@@ -299,6 +377,7 @@ def main(
     question: Annotated[list[str], typer.Argument(help="Question")],
     model: Annotated[str, typer.Option(help="Nebius model name")] = DEFAULT_MODEL,
     save: Annotated[bool, typer.Option(help="Write a JSON record to runs/")] = True,
+    check_support: Annotated[bool, typer.Option(help="Judge whether each cited passage states the claim")] = True,
 ) -> None:
     """Answer a question with claims anchored to Tavily passages and primary sources."""
     question_text = " ".join(question)
@@ -313,6 +392,7 @@ def main(
             on_search=lambda q, since: console.print(
                 f"[yellow]search[/yellow] {q}" + (f" [dim](since {since})[/dim]" if since else ""), highlight=False
             ),
+            check_support=check_support,
         )
     except Exception as exc:  # surface provider errors plainly
         console.print(f"[bold red]Run failed:[/bold red] {exc}")

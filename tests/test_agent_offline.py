@@ -145,3 +145,47 @@ def test_clear_error_when_recovery_fails():
     model = ScriptedModel(script=_search_then(AIMessage(content="I cannot help."), AIMessage(content="still no")))
     with pytest.raises(RuntimeError, match="I cannot help"):
         run_research("q", model, FakeTavily(), today=TODAY)
+
+
+class JudgingModel(ScriptedModel):
+    """Scripted agent run, plus a judge that quotes the passage it is given."""
+
+    verdict_label: str = "supports"
+
+    def with_structured_output(self, schema, **kwargs):
+        label = self.verdict_label
+
+        class _Runnable:
+            def invoke(self, messages, **_):
+                body = messages[-1].content
+                verdicts = []
+                for n, block in enumerate(body.split("[item ")[1:]):
+                    passage = block.split("PASSAGE (", 1)[1].split("): ", 1)[1].strip()
+                    span = passage.split(".")[0] + "." if label != "not_addressed" else ""
+                    verdicts.append({"id": n, "label": label, "span": span})
+                return schema.model_validate({"verdicts": verdicts})
+
+        return _Runnable()
+
+
+def test_judge_runs_and_labels_claims():
+    model = JudgingModel(script=script("2026-01-01"))
+    _, report, log = run_research("q", model, FakeTavily(), today=TODAY)
+    assert log["judge_items"] >= 3
+    assert all(c.judged for c in report.claims)
+    nebius = next(c for c in report.claims if c.text.startswith("Nebius"))
+    assert nebius.status in (Status.PRIMARY, Status.PRIMARY_PARTIAL)
+    assert nebius.supporting and nebius.supporting[0].span
+
+
+def test_judge_finding_nothing_marks_claims_unsupported():
+    model = JudgingModel(script=script("2026-01-01"), verdict_label="not_addressed")
+    _, report, _ = run_research("q", model, FakeTavily(), today=TODAY)
+    assert {c.status for c in report.claims} == {Status.UNSUPPORTED}
+    assert report.summary()["unsupported"] == 3
+
+
+def test_check_support_false_skips_judge():
+    model = JudgingModel(script=script("2026-01-01"))
+    _, report, log = run_research("q", model, FakeTavily(), today=TODAY, check_support=False)
+    assert "judge_items" not in log and not any(c.judged for c in report.claims)
