@@ -111,3 +111,37 @@ def test_parse_start_date():
     assert parse_start_date("2026-01-01", TODAY) == (date(2026, 1, 1), None)
     assert parse_start_date(None, TODAY) == (None, None)
     assert parse_start_date("Jan 2026", TODAY)[0] is None
+
+
+def _search_then(final: AIMessage, *extra: AIMessage) -> list[AIMessage]:
+    return [
+        AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "AI search 2026"}, "id": "s1"}]),
+        final,
+        *extra,
+    ]
+
+
+ANSWER_JSON = '{"summary": "Deals.", "claims": [{"text": "Nebius agreed to acquire Tavily.", "passage_ids": ["P1"], "source_domain": null}]}'
+
+
+def test_recovers_when_model_ends_with_json_text():
+    """Seen live with Kimi: the model answers in plain text instead of calling the answer tool."""
+    model = ScriptedModel(script=_search_then(AIMessage(content=f"Here you go:\n```json\n{ANSWER_JSON}\n```")))
+    answer, report, log = run_research("q", model, FakeTavily(), today=TODAY)
+    assert log["recovered"] and answer.summary == "Deals."
+    assert report.claims[0].evidence[0].id == "P1"
+
+
+def test_recovers_with_forced_structured_call_when_text_is_prose():
+    forced = AIMessage(content="", tool_calls=[{"name": "ResearchAnswer", "args": {
+        "summary": "Deals.", "claims": [{"text": "Nebius agreed to acquire Tavily.", "passage_ids": ["P1"]}]}, "id": "f1"}])
+    model = ScriptedModel(script=_search_then(AIMessage(content="The market consolidated this year."), forced))
+    answer, report, _ = run_research("q", model, FakeTavily(), today=TODAY)
+    assert answer.claims[0].passage_ids == ["P1"] and len(report.claims) == 1
+
+
+def test_clear_error_when_recovery_fails():
+    import pytest
+    model = ScriptedModel(script=_search_then(AIMessage(content="I cannot help."), AIMessage(content="still no")))
+    with pytest.raises(RuntimeError, match="I cannot help"):
+        run_research("q", model, FakeTavily(), today=TODAY)

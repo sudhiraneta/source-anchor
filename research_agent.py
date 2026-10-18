@@ -20,6 +20,7 @@ import typer
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from rich.console import Console
@@ -53,7 +54,13 @@ SYSTEM_PROMPT = """Today is {today}. You are a research assistant. Every claim y
    - source_domain: if the claim is about one organization's own action (a launch, a deal, a price),
      the official website of that organization, e.g. "openai.com". Otherwise null.
 4. Keep exact figures as the passage gives them. Do not put URLs in claims. Never cite an ID you did not receive.
+5. Finish by calling the ResearchAnswer tool. Never end with a plain-text reply.
 """
+
+RECOVERY_PROMPT = (
+    "Return your final answer now in the ResearchAnswer format, using only the passage IDs "
+    "from the search results above."
+)
 
 
 class Claim(BaseModel):
@@ -130,6 +137,38 @@ def build_anchor_search(client: Any, registry: PassageRegistry, log: dict) -> Ca
 # ------------------------------------------------------------------- agent
 
 
+def _last_ai_text(messages: list) -> str:
+    for m in reversed(messages):
+        if getattr(m, "type", None) == "ai":
+            content = m.content
+            if isinstance(content, list):
+                content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+            return str(content or "")
+    return ""
+
+
+def recover_answer(model: Any, messages: list) -> ResearchAnswer:
+    """Some models end with plain text instead of calling the answer tool.
+    Try, in order: JSON in that text, then one forced structured call over the
+    same conversation. Search results are already in the registry, so no new
+    searches are needed."""
+    text = _last_ai_text(messages)
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return ResearchAnswer.model_validate_json(text[start : end + 1])
+        except ValueError:
+            pass
+    try:
+        structured = model.with_structured_output(ResearchAnswer, method="function_calling")
+        result = structured.invoke([*messages, HumanMessage(RECOVERY_PROMPT)])
+        if isinstance(result, ResearchAnswer):
+            return result
+    except Exception as exc:  # report what the model said, not a bare failure
+        raise RuntimeError(f"No structured answer ({exc}). Model's last reply: {text[:400]!r}") from exc
+    raise RuntimeError(f"No structured answer. Model's last reply: {text[:400]!r}")
+
+
 def run_research(
     question: str,
     model: Any,
@@ -158,7 +197,8 @@ def run_research(
 
     answer = state.get("structured_response")
     if not isinstance(answer, ResearchAnswer):
-        raise RuntimeError("The model did not return a structured answer.")
+        answer = recover_answer(model, state.get("messages", []))
+        log["recovered"] = True
 
     drafts = [DraftClaim(c.text, c.passage_ids, c.source_domain) for c in answer.claims[:MAX_CLAIMS]]
     window = min(log["window_starts"], default=None)
