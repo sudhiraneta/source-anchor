@@ -140,3 +140,5 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`. LangChain sends 
 | `research_agent.py` | The starter's stack (LangChain + Nebius + Tavily) with the date-aware search tool, structured claims and the anchor pass. |
 | `eval.py`, `eval_questions.txt` | Traceability eval over a question set. |
 | `tests/` | Offline tests: core logic and the full agent loop. |
+| `TECHNICAL_STATEMENT.md` | One-page approach, reasoning and value. |
+| `BUILD_LOG.md` | How this was built with an AI coding partner, decision by decision. |
