@@ -55,7 +55,17 @@ I also asked whether each piece had evidence behind it. That separated what we h
 - **Credit costs:** checked against Tavily's pricing page (basic 1, advanced 2) before stating them.
 - **Example output:** the README labels it as test-fixture output, not a live run.
 
-## 7. What I ran live
+## 7. Round two: the judge, after I challenged the verification depth
+
+- I asked how deep the "verification" really went. The honest answer: the anchor search checked that the organization's site had a page *on the topic*, which is relevance, not support. That was the same flaw I had rejected in the re-search idea.
+- Design: a judge reads each (claim, passage) pair and must copy the exact sentence that states the claim. Code checks the sentence is in the passage; invented quotes are discarded. New labels `CONTESTED` and `UNSUPPORTED`. `PRIMARY` now requires the organization's own passage to state the claim.
+- A test exposed that my error handling silently swallowed a judge bug. Replaced with a reported `judge_error`, so failures show instead of hiding.
+- `planted.py`: break real claims on purpose (number, actor, year, negation) and measure the catch rate. It only tests the error types I thought of; the README says so.
+- Live finding: Kimi-K2.6 returned empty replies through `create_agent`; `diag_model.py` showed Qwen3-235B answering and tool-calling correctly. Added a recovery path and switched the recommended model.
+- I pushed on limitations per persona (vendor-risk analyst, founder, marketplace admin, healthcare compliance, market analyst, consumer, adversarial). The result is the claim-kind policy table in README "Next": the question type should decide which source counts as primary.
+- Checked Tavily's Feedback endpoint: it accepts `used_ids`, `used_citations` and per-result scores, which the agent already computes. That became the ecosystem loop in the README.
+
+## 8. What I ran live
 
 *(fill in after running with keys)*
 - Starter on the assignment question: output saved as the "before".

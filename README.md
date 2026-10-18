@@ -1,144 +1,147 @@
 # Source Anchor
 
-A Tavily research agent that shows how far to trust each claim: whether it cites a passage Tavily actually returned, and whether the organization the claim is about says so on its own website.
+A Tavily research agent whose every claim is traceable: it cites a passage Tavily returned, a judge quotes the sentence that states it, and the label says whether the organization itself or only third parties said it.
 
 ```bash
 cp .env.example .env        # add TAVILY_API_KEY and NEBIUS_API_KEY
-uv run research_agent.py "What changed in the AI search market this year?"
-uv run pytest               # 17 offline tests, no keys needed
-uv run eval.py              # 8-question traceability eval (uses credits)
+uv run research_agent.py "What changed in the AI search market this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
+uv run pytest               # 38 offline tests, no keys needed
+uv run eval.py              # traceability eval over eval_questions.txt (uses credits)
+uv run planted.py runs/     # catch rate on deliberately broken claims (no credits)
 ```
 
-## Premise
+## The problem, in one paragraph
 
-People use a research agent to avoid reading twenty pages themselves. The starter answers well enough, but it gives the reader no way to tell a sourced sentence from one the model filled in. It has three concrete gaps:
+Tavily is paid when agents built on it reach production. The wall between a demo and production isn't search quality; it's that nobody can approve an agent whose answers can't be audited. The starter shows why: it doesn't know today's date, so "this year" means nothing; its sources are a URL list at the end, so no one can tell which link backs which sentence; and ten sites repeating one rumor look like ten sources. The reader re-checks everything, and an answer you must re-check saves no time. That is the adoption problem for a solo builder (an agent they can't ship) and for an enterprise (an agent that fails review).
 
-1. **No date.** The prompt doesn't tell the model today's date, so "this year" has no meaning and the search has no time window.
-2. **Citations are a URL list.** "Include source URLs when available" puts links at the end. You can't tell which link backs which sentence, or whether a sentence is backed at all.
-3. **Repetition looks like confirmation.** Ten sites repeating one rumor look like ten sources. For "what changed this year" questions, most results are news coverage, not the organization that made the change.
+## What the agent guarantees
 
-So the reader re-checks everything, and an answer you have to re-check saves no time. That is the adoption problem: a solo builder can't ship an agent their users trust, and an enterprise team can't put one in front of analysts without an audit trail.
+Every label is about the passages, never about the world. The agent cannot tell you a fact is true. It can guarantee four things:
 
-## Goal
+1. **No invented sources.** A claim may only cite passage IDs (`[P1]`, `[P2]`...) from results Tavily actually returned. A claim with no valid ID is dropped and listed as dropped.
+2. **No misquoted sources.** A judge reads each (claim, passage) pair and must copy the exact sentence that states the claim. Code checks that sentence is really in the passage; a quote that isn't there is discarded, not trusted.
+3. **Who said it.** For a claim about one organization, one Tavily search restricted to that organization's own site decides whether the originator said it or only the press did.
+4. **No invented numbers or stale windows.** Figures in the claim are checked against the passages; today's date goes in the prompt, and a claim whose sources all predate the window is flagged.
 
-For every claim in the answer, the reader should see, without opening a browser:
-
-- the exact passage it came from (or the claim isn't shown),
-- whether the organization involved confirms it on its own site,
-- which figures nobody confirms, and whether the sources fall in the asked-for period.
-
-Constraint: keep the output short (one summary sentence, at most five claims) and use only what Tavily already provides.
-
-## Decision
-
-I considered and rejected three approaches before settling on this one:
-
-| Option | Why not |
-|---|---|
-| Ask the model to quote, then string-match the quote | Brittle (whitespace, reformatted numbers), and it flags correct paraphrases. |
-| Re-search each claim and trust a high relevance score | Relevance is not support. A wrong date on a real event still ranks high. |
-| Rank sources with a list of "reputable" domains | Subjective, never complete, and nobody adopts a pattern that needs a list curated by hand. |
-
-**What I built instead: cite by ID, then go to the source.**
-
-1. Every passage Tavily returns gets an ID (`[P1]`, `[P2]`, ...) across all searches. Verbatim reprints get stored once.
-2. The model may only cite IDs. A claim citing no valid ID is dropped and listed as dropped. Nothing needs verifying after the fact, because nothing else can be cited.
-3. For a claim about one organization, the model names that organization's site (`nebius.com`). If no cited passage is from that site, code runs **one** Tavily search restricted to it (`include_domains`, `restrict`, basic depth).
-4. Code compares the figures in the claim with the primary passage. Figures that only appear in press coverage are shown as such. Figures in no passage at all are flagged.
-5. Today's date goes into the prompt. The model proposes `start_date`; code rejects malformed or future dates and passes valid ones to Tavily.
-
-This replaces "who repeated it" with "did the source say it". Forty reprints of a press release don't outweigh the press release, so echo detection and domain lists become unnecessary.
-
-## What the output looks like
-
-Each claim gets one label:
+## Labels
 
 | Label | Meaning |
 |---|---|
-| `PRIMARY` | The organization's own site backs the claim and its figures. |
-| `PRIMARY*` | The own site confirms the event, but at least one figure comes only from other sources. |
-| `REPORTED` | Only third-party sources; the restricted search on the own site found nothing. |
-| `SYNTHESIS` | A market-level statement with no single owner, backed by cited passages. |
+| `PRIMARY` | The organization's own page states the claim, figures included. |
+| `PRIMARY*` | The own page states the event; at least one figure comes only from other sources. |
+| `REPORTED` | Third parties state it; the organization's own site does not (or the search there found nothing). |
+| `SYNTHESIS` | A market-level statement with no single owner, stated by a cited passage. |
+| `CONTESTED` | A cited passage states something incompatible (a different number, date, or actor). Both are shown. |
+| `UNSUPPORTED` | No cited passage states the claim. |
 
-The example below is the rendered output of the offline test fixture, **not a live run**. The sources and text are invented to show the format:
+Example output. **This is the offline test fixture, not a live run**; the sources are invented to show the format:
 
 ```
 PRIMARY* 1. Nebius agreed to acquire Tavily for about $400 million.
-  own site confirms the event, not every figure
+  own site states the event, not every figure
   [P4] nebius.com · 2026-02-10 · Nebius Group today announced an agreement to acquire Tavily.
   [P1] technews.example · 2026-02-11 · Nebius agreed to acquire Tavily for about $400 million, sources said.
+  stated in P4: "Nebius Group today announced an agreement to acquire Tavily."
   figures not on the organization's site: 400
 
 REPORTED 2. OpenAI expanded web search in its Responses API.
-  only third-party sources; own site did not confirm
+  third-party sources state this; the own site does not
   [P3] blog.example · 2026-03-02 · OpenAI expanded web search in its Responses API to more models.
+  stated in P3: "OpenAI expanded web search in its Responses API to more models."
 
 3 claims shown · 1 dropped (no valid passage) · 2 anchor searches · window from 2026-01-01
   dropped: Google cut grounding prices by 50%.
 ```
 
-Claim 1 is the case this is built for. The deal is real and confirmed by the buyer. The price is reported, not confirmed, and the output says exactly that.
+Claim 1 is the case this is built for: the deal is confirmed by the buyer, the price only by the press, and the output says exactly that.
 
-## Value
+## Design decisions, including the rejected ones
 
-- **For a solo builder or early-stage team:** a review layer they don't have to build. Their agent tells users which statements are confirmed and which are reported, which makes it shippable.
-- **For an enterprise team:** an audit trail per claim (passage, URL, date, primary or not), saved as JSON in `runs/`. This is what gets an agent past "can we put this in front of customers".
-- **For Tavily:** the pattern uses features most builders never touch (`include_domains` with `restrict`, `chunks_per_source`, `start_date`, `published_date`). It's a reusable recipe for a guide, and better-trusted answers are what keep a builder calling search.
-- **Portable:** `grounding.py` has no LangChain import. The same functions work with the Vercel AI SDK, OpenAI Agents, or a hand-written loop. Only the "get structured output from the model" step is framework-specific.
+| Option | Verdict |
+|---|---|
+| Ask the writer to quote, then string-match | Rejected. Brittle, and it flags correct paraphrases. |
+| Re-search each claim and trust the relevance score | Rejected. Relevance is not support; a wrong date on a real event still ranks high. |
+| Rank sources by a curated list of trusted domains | Rejected. Subjective, never complete, and nobody adopts a pattern that needs curation. |
+| Count how many domains agree | Rejected. Forty reprints of one press release look like forty sources. |
+| Google's Check Grounding API | The gold standard, but locked to Vertex AI. Tavily's builders aren't there. |
+| **Cite by ID, anchor to the originator, judge with a quoted span** | Built. Every check runs on text already in memory, except one restricted search and one batched judge call. |
+
+The judge is the piece that turns "traceable" into "checked". Without it, a topical hit on the organization's site earned `PRIMARY` even if the page said something else. With it, `PRIMARY` means the page states the claim.
+
+## What this does not do
+
+- **It doesn't check truth or currency.** A press release can be wrong; a price can change an hour after the crawl. `PRIMARY` means the originator said it, nothing more.
+- **It doesn't check completeness.** If the most important change this year is missing, nothing flags it.
+- **The judge is a model.** The quoted span makes it checkable, not independent. `planted.py` measures how often it catches errors we plant on purpose.
+- **"The organization's own site" is the wrong primary source for some questions.** Funding (investor or filing), regulation (the regulator), compliance (a trust portal that blocks crawlers). The claim-kind table below is the fix, not yet built.
+- **A wrong domain guess becomes `REPORTED`.** Safe (never a false `PRIMARY`), but it hides a lookup failure under a source judgment.
+- **`published_date` is Tavily's estimate**, so the stale flag is a hint.
+
+## Who it serves, and what each gets
+
+| Segment | What they get |
+|---|---|
+| Startups / B2B2C | A review layer they didn't have to build. The agent says which statements are confirmed and which are reported, so the product is shippable. |
+| Enterprise (B2B) | An audit record per claim (passage, URL, date, label, quoted span) in `runs/*.json`. This is what passes a platform team's review. |
+| Marketplaces (Snowflake, Databricks, AWS) | One answer to "how do we know this is right?", identical across platforms. |
+| Tavily | A reusable recipe using features most builders never touch (`include_domains` + `restrict`, `chunks_per_source`, `start_date`), and a feedback signal (below). |
+
+## The ecosystem loop: feedback to Tavily
+
+Tavily's [Feedback endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/feedback) accepts per-result scores, `used_ids`, `used_citations` and `response_delivered`, and its docs say this is "the signal we use to improve ranking and result quality". Most agents can't send it because they don't know which results they used. This one knows, per claim: which passage stated it, which contradicted it, and which was the originator's own page. That maps one-to-one onto the endpoint. Better labels for the user and better training signal for Tavily are the same data, computed once. Sending it is free and planned (see Next); text fields should be opt-in, since an enterprise may not want the question leaving the building.
 
 ## Cost
 
-| Step | Tavily credits |
+| Step | Tavily credits | Model calls |
+|---|---|---|
+| Research search, advanced depth | 2 per call | the agent loop |
+| Anchor search, basic, only when the own site isn't already cited | 1 each, ≤5 | 0 |
+| Judge, one batched call for all (claim, passage) pairs | 0 | 1 |
+| Recovery, only if the writer skips the answer format | 0 | ≤1 |
+
+Rates from Tavily's [credits page](https://docs.tavily.com/documentation/api-credits). Worst case: about 7 credits and 3 to 5 model calls per answer, roughly double the starter's latency. `--no-check-support` drops the judge.
+
+## How it was verified
+
+- **38 offline tests.** Core logic (IDs, reprint dedupe, look-alike domains, dates, figures, stale windows), the judge (span verification, contradiction beats support, invented spans discarded, judge failure keeps provenance labels and is reported, not hidden), the real `create_agent` loop with a scripted model and a fake Tavily client (checks the exact parameters sent to Tavily), and the planted-error harness.
+- **Tavily client read directly** to confirm `start_date`, `include_domains`, `include_domains_mode` are named parameters and other keys pass through.
+- **Credit rates and the feedback endpoint** checked against Tavily's docs.
+- **Live finding:** Kimi-K2.6 (the starter's default) returned empty replies through `create_agent` on Nebius. `Qwen/Qwen3-235B-A22B-Instruct-2507` answered and tool-called correctly in `diag_model.py`. The recovery path exists because of this.
+
+**Live results** (fill in from your runs):
+
+| Run | Result |
 |---|---|
-| Research search, advanced depth (the agent may call it more than once) | 2 per call |
-| Anchor search, basic depth, only for organization claims not already backed by their own site | 1 each, at most 5 per answer |
-
-Rates are from Tavily's [credits page](https://docs.tavily.com/documentation/api-credits) (basic 1, advanced 2). Worst case adds 5 credits and one round of searches per answer. Anchor searches run one after another; running them concurrently is an easy latency improvement.
-
-## How I verified it
-
-- **17 offline tests** (`uv run pytest`). 14 cover the core: passage IDs, reprint dedupe, site matching (including look-alike domains), date parsing, dropped claims, anchor search only when needed, figures confirmed only by press, invented figures, stale windows, undated sources. 3 drive the **real** `create_agent` loop with a scripted model and a fake Tavily client, and check what is actually sent to Tavily (`start_date`, `chunks_per_source`, `include_domains` + `restrict`) and that a future `start_date` is never forwarded.
-- **Tavily client checked directly:** `tavily-python` exposes `start_date`, `include_domains` and `include_domains_mode` as named parameters and forwards other keys (`chunks_per_source`, `include_published_date`) into the request body as-is.
-- **Rendering checked by eye**, which caught a display bug (raw markup tags on the primary-source line), now fixed.
-
-**Not yet verified, needs one run with keys:**
-- How Kimi-K2.6 on Nebius behaves with the structured-output tool (`ToolStrategy` uses ordinary tool calling and retries on schema errors, so it should work, but I haven't watched it).
-- Whether Tavily returns `published_date` for general-topic results with `include_published_date` set (documented as beta).
-- Real `chunks_per_source` separators. The code splits on `[...]`; if Tavily uses a different one, each page becomes one passage. Still correct, just coarser.
-- The eval numbers. Run `uv run eval.py` and paste the table here.
+| `research_agent.py` on the assignment question | _paste the labeled output_ |
+| `eval.py` table | _paste_ |
+| `planted.py` catch rate | _paste: "Caught X/Y planted errors"_ |
 
 ## Eval
 
-`eval.py` runs 8 questions (product launches, funding, partnerships, regulation; some about one organization, some market-wide) and reports per question: claims shown, claims dropped, each label, flagged figures, stale claims, anchor searches, seconds. The headline is **share of claims anchored to the organization's own site**.
-
-The starter has no claim structure, so these metrics don't exist for it; the comparison is presence vs absence, not a score difference. These are traceability metrics. For accuracy, hand-check a sample: for 10 `PRIMARY` claims, open the primary URL and mark whether it actually states the claim. That number is the honest measure of the anchor check.
-
-## Limits
-
-- **The site guess can be wrong.** If the model names `meta.com` when the news is on `about.fb.com`, the claim shows as `REPORTED` when it shouldn't. That's a false miss, never a false confirmation.
-- **The anchor search checks topic, not truth.** The figure check is the only automatic comparison of content. The primary passage is shown so a person can confirm in a second.
-- **Primary sources spin.** `PRIMARY` means the organization said it, not that it is true.
-- **`published_date` is Tavily's estimate** and can reflect a later update, so the stale flag is a hint.
-- **Figures are matched as digits.** "$1.2 billion" vs "1,200 million" won't match and gets flagged. Over-flagging, not under-flagging.
-- **Model compliance.** A claim citing the wrong passage ID passes the ID check. The figure check catches some of these; a small entailment check on the claim and its one passage is the next step.
+- `eval.py`: traceability metrics per question (claims shown, dropped, each label, flagged figures, stale, anchor searches). The baseline has no claim structure, so the comparison is presence vs absence.
+- `planted.py`: takes claims from a real run, breaks each one on purpose (number ×3, actor swapped, year shifted, negated), and re-judges against the recorded passages. The **catch rate** is a measured accuracy number, with no hand labels and no credits. Its blind spot: it only plants the error types I thought of. A hand-labeled sample of 30 (claim, passage) pairs is the honest complement.
 
 ## Tracing
 
-Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`. LangChain sends every model call and `web_search` call to LangSmith with no code changes. The anchor searches run outside the agent loop, so they're recorded in the `runs/*.json` record rather than the trace. Wrapping them with LangSmith's `@traceable` would put them in the same trace.
+Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces every model and `web_search` call with no code changes. Anchor searches and the judge run outside the agent loop and are recorded in `runs/*.json`; wrapping them with `@traceable` would put them in the same trace.
 
 ## Next
 
-1. A small entailment check on (claim, cited passage) for claims that pass the ID check.
-2. Run anchor searches concurrently.
-3. Let builders pass known sites (`{"Meta": "about.fb.com"}`) to fix wrong guesses.
+1. **Claim kinds.** One field per claim (`announcement`, `funding`, `regulation`, `compliance`, `live_state`, `market`) and a policy table that picks the right primary source per kind, shows "as of" dates for live state, and requires two independent sources for market claims. Same four checks, right anchor per question.
+2. **Feedback to Tavily** after each run: `used_ids`, per-result support verdicts, primary flag. Text fields opt-in.
+3. **Show the searched domain** on every `REPORTED`, so the reader can tell "they didn't say it" from "we looked in the wrong place".
+4. **False-premise pre-check**: if no passage establishes the premise, return zero claims and say so.
+5. Plain-language label rendering for end users; concurrent anchor searches.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `grounding.py` | Framework-free core: passage registry, claim checks, labels. |
-| `research_agent.py` | The starter's stack (LangChain + Nebius + Tavily) with the date-aware search tool, structured claims and the anchor pass. |
+| `grounding.py` | Framework-free core: passage registry, anchor and figure checks, judge application, labels. No LangChain import. |
+| `research_agent.py` | The starter's stack (LangChain + Nebius + Tavily) with the date-aware search tool, structured claims, anchor pass, judge and recovery. |
+| `planted.py` | Planted-error catch rate from recorded runs. |
 | `eval.py`, `eval_questions.txt` | Traceability eval over a question set. |
-| `tests/` | Offline tests: core logic and the full agent loop. |
+| `diag_model.py` | Two-call check of how a Nebius model behaves. |
+| `tests/` | 38 offline tests. |
 | `TECHNICAL_STATEMENT.md` | One-page approach, reasoning and value. |
 | `BUILD_LOG.md` | How this was built with an AI coding partner, decision by decision. |
