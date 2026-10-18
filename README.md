@@ -108,13 +108,26 @@ Rates from Tavily's [credits page](https://docs.tavily.com/documentation/api-cre
 - **Credit rates and the feedback endpoint** checked against Tavily's docs.
 - **Live finding:** Kimi-K2.6 (the starter's default) returned empty replies through `create_agent` on Nebius. `Qwen/Qwen3-235B-A22B-Instruct-2507` answered and tool-called correctly in `diag_model.py`. The recovery path exists because of this.
 
-**Live results** (fill in from your runs):
+**Live results.** Run on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 returned empty replies through `create_agent`; see the recovery path).
 
-| Run | Result |
-|---|---|
-| `research_agent.py` on the assignment question | _paste the labeled output_ |
-| `eval.py` table | _paste_ |
-| `planted.py` catch rate | _paste: "Caught X/Y planted errors"_ |
+On the assignment question, *"What changed in the AI search market this year?"* (16.9s, one search, 5 claims, 0 dropped, judge ran on all 5, `judge_error: null`):
+
+- Every claim came back **`SYNTHESIS`**: the model attached no single organization, because a market-wide question has no originator to anchor to. This is the documented case, not a failure, and it means the assignment's own question does not exercise the `PRIMARY`/`REPORTED` path.
+- **The judge verified every claim against a real span.** For example, "ChatGPT processes 2.5 billion queries per day" is backed by the exact sentence quoted from the source and confirmed present in the passage by code. No figure was invented; nothing was dropped or stale.
+
+To exercise the primary-source anchoring, run an organization-specific question, which is why `eval_questions.txt` leads with one:
+
+```
+uv run research_agent.py "What did OpenAI announce for its API this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
+```
+
+Then the catch-rate number, which does not need live search:
+
+```
+uv run planted.py runs/ --model Qwen/Qwen3-235B-A22B-Instruct-2507
+```
+
+`planted.py` result: _paste "Caught X/Y planted errors" here_ — the number-heavy synthesis claims above make good planted-error inputs, since a mutated figure no longer appears in its passage.
 
 ## Eval
 
