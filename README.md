@@ -14,24 +14,31 @@ uv run planted.py runs/  # catch rate on deliberately broken claims (no credits)
 
 Same question, same model. The starter returns a paragraph with links at the end; you can't tell which link backs which sentence, or whether a sentence is backed at all.
 
-**Starter** (`starter_agent.py`): a single prose paragraph that ends with a flat list of source URLs. There is no mapping from any sentence to any source, no indication of which claims the organization itself stated versus which a third party reported, and no flag when a sentence has no backing at all. To reproduce: `uv run starter_agent.py "What did OpenAI announce for its API this year?"`.
+**Starter** (`starter_agent.py`, excluded from this repo per the brief): a single prose paragraph that ends with a flat list of source URLs. There is no mapping from any sentence to any source, no indication of which claims the organization itself stated versus which a third party reported, and no flag when a sentence has no backing at all.
 
-**Source Anchor**, same question (real run, `Qwen/Qwen3-235B-A22B-Instruct-2507`, abridged):
+**Source Anchor**, same question — a real run of the shipped code in default mode (`Qwen/Qwen3-235B-A22B-Instruct-2507`, abridged):
 
 ```
 PRIMARY 1. OpenAI announced the public beta of its Agents API on September 10, 2026 ...
   the organization's own site states this
-  [P15] openai.com · 2026-10-07 · ... # Introducing the Agents API. Build and run cloud agents ...
-  stated in P15: "September 10, 2026 # Introducing the Agents API. Build and run cloud agents with the Codex harness, fully managed by OpenAI."
+  [P12] openai.com · 2026-10-07 · September 10, 2026 # Introducing the Agents API ...
+  stated in P12: "September 10, 2026 # Introducing the Agents API Build and run cloud agents with the Codex harness, fully managed by OpenAI."
 
-REPORTED 2. OpenAI introduced GPT-6 Sol and Luna on September 22, 2026 ...
+PRIMARY* 2. On September 22, 2026, OpenAI released GPT-6 Sol and Luna ... for Plus, Pro, Business, Enterprise, and Edu users ...
+  own site states the event, not every figure
+  [P19] community.openai.com · 2026-09-22 · ... GPT-6 Sol and Luna build on Astra's ...
+  stated in P19: "GPT-6 Sol and Luna roll out today in ChatGPT Work and Codex for Plus, Pro, Business, Enterprise, and Edu users."
+  figures not on the organization's site: 22
+
+REPORTED 3. GPT-6.1 Sol was released on September 29, 2026, priced at $2 per million input tokens ...
   third-party sources state this; the own site does not
-  [P3] powerdrill.ai · 2026-09-24 · OpenAI published the announcement on Tuesday, September 22, 2026 ...
+  [P5] tech-insider.org · 2026-10-10 · ... GPT-6.1 Sol shipped on September 29, 2026, priced at $2 ...
 
-5 claims shown · 0 dropped · 5 anchor searches · window from 2026-01-01
+SYNTHESIS 5. The Responses API has become the preferred endpoint for developers ...
+  market-level statement, stated by a cited passage
 ```
 
-The difference: every sentence sits next to the passage it came from, and the label says whether OpenAI's own site confirmed it (claim 1) or only a third party did (claim 2). The reader checks the flagged ones, not all twenty sources.
+The difference: every sentence sits next to the passage it came from, and the label says whether OpenAI's own site confirmed it (claims 1–2), only a third party did (claim 3), or it's a market-level statement with no single owner (claim 5). The reader checks the flagged ones, not all twenty sources. Six labels exist; this one run exercised four of them with no `CONTESTED` (off by default — see below).
 
 ## The problem, and why it matters to Tavily
 
@@ -75,7 +82,7 @@ Runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 re
 **What is solid, and proven live:**
 
 - **Traceability.** Across every run, no claim cited a source that wasn't returned, no claim carried a figure absent from its passages, and every shown span was verified present in its passage. Claims the model couldn't ground were dropped and listed.
-- **The primary-source anchor works.** On *"What did OpenAI announce for its API this year?"*, claim 1 (the Agents API beta) is labelled `PRIMARY` because the restricted search on `openai.com` returned the page whose own headline states it.
+- **The primary-source anchor works, in the shipped default.** A run of the final code on *"What did OpenAI announce for its API this year?"* returned 1 `PRIMARY`, 1 `PRIMARY*` (`community.openai.com` states the Sol/Luna rollout; one date digit wasn't in the quoted text), 2 `REPORTED`, 1 `SYNTHESIS`, and **0 `CONTESTED`** — four labels exercised, no wrong flag. Two claims that reached `PRIMARY` on an earlier run came back `REPORTED` here because Tavily returned different own-site pages: search variance, failing in the safe direction (never a false `PRIMARY`).
 - **Changed-number detection.** `planted.py` broke 24 claims on purpose: **21/24 caught (88%)** — changed numbers **10/10**, negations 2/2, swapped actors 4/5, shifted years 5/7.
 - **Market questions behave correctly.** *"What changed in the AI search market this year?"* returned five `SYNTHESIS` claims: a market-wide question has no originator, so the primary path correctly never fires.
 
