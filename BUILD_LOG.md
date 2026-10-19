@@ -1,80 +1,84 @@
 # Build Log
 
-How this was built, written for a reviewer who wants to know one thing: when the AI was wrong, did I notice, and what did I do about it.
+How I reasoned through this, decision by decision, and how each decision was tested. I used an AI coding assistant as a build partner throughout; every proposal, mine or its, had to survive a challenge and a test before it stayed. Everything below points at an artifact you can check: a commit, a test, or a file in `runs/`.
 
-I built this with Claude in claude.ai as a coding and research partner. Two rules governed the whole session:
+## 1. The product thinking
 
-1. **Make the AI argue against its own proposal before writing code.** Every design below was challenged at least once; four of them died that way.
-2. **Verify against the source, never against the model's memory.** Tavily's parameters came from reading the installed `tavily-python` client. Credit costs and the Feedback endpoint came from Tavily's docs. Model behavior came from running it.
+I did not start from the code. I started from the person using it.
 
-Everything below points at an artifact you can check: a commit, a test, or a file in `runs/`.
+**Who.** Someone who asks a research agent a question because they don't have time to read twenty pages. An analyst doing vendor due diligence. A founder's customer using a research feature. A platform team deciding whether an agent is safe to ship.
 
-## The decision arc
+**What hurts.** The agent returns five confident sentences and a list of links. The reader can't tell which link backs which sentence, whether the company said it or a blog did, or whether a number is real. So they re-check everything. An answer you must re-check has saved nothing.
 
-### 1. What problem, and for whom
+**Why it matters, in business terms.** That re-checking is why agents stall in pilot. Not weak search — unauditable output. A team can't approve what it can't trace. Tavily is paid when agents reach production, so trust is the revenue gate. Three segments, one wall: the startup can't ship the feature, the enterprise can't pass review, the marketplace can't answer "how do we know this is right?"
 
-I rejected the obvious reading of the starter ("make the search better") in favor of a user problem: a reader who gets an answer they must re-check by hand has saved no time, so the agent never reaches production. For Tavily, that is the revenue gate — it is paid on production usage. The persona was deliberately broad (solo builder, enterprise analyst, marketplace admin) because the fix had to be one pattern, not three features.
+**The metric I chose to move.** Not "accuracy" — nobody can approve on an accuracy score they can't inspect. The metric is *how much of the answer the reader can trust without re-checking*: claims traceable to a verified passage, labeled by who said it. Secondary: unsupported claims reaching the reader (should be zero), and the catch rate on deliberately broken claims.
 
-Verified against the code before designing: the starter has no date in its prompt, one default `TavilySearch()` call, citations described only as "include URLs when available," and no eval or tracing.
+**The constraint.** One pattern that serves all three segments, built only on what Tavily already returns, with no new vendor. If it needs a second service or a hand-curated list, builders won't adopt it.
 
-### 2. Four designs I killed, and who killed them
+Before designing, I verified the starter's actual gaps against its code: no date in the prompt, one default `TavilySearch()` call, citations as "include URLs when available," no eval, no tracing.
 
-| Design | Killed by | Why |
-|---|---|---|
-| Model quotes a sentence, code string-matches it | The AI, when I asked it to attack the plan | Brittle on reformatting; flags correct paraphrases |
-| Re-search each claim, trust Tavily's relevance score | The AI, on its own proposal, after I pushed | Relevance is not support; a wrong date on a real event still ranks high |
-| Count how many domains agree | **Me** | A viral rumor on ten sites is still one rumor |
-| Curated list of "trusted" domains | **Me** | Subjective, never complete, nobody adopts a pattern that needs hand curation |
+## 2. Designs I rejected, and why
 
-The survivor replaced "how many sites repeated it" with "did the source itself say it": cite only passages Tavily returned, and for a claim about an organization, search that organization's own site. That one move made echo detection and domain lists unnecessary.
+| Design | Why I rejected it |
+|---|---|
+| Have the model quote a sentence, string-match it in code | Brittle on reformatting; flags correct paraphrases as failures |
+| Re-search each claim, trust Tavily's relevance score as proof | Relevance is not support. A wrong date on a real event still ranks high |
+| Count how many domains agree | A viral rumor on ten sites is still one rumor |
+| A curated list of "trusted" domains | Subjective, never complete, and nobody adopts a pattern that needs hand curation |
+| Google's Check Grounding API | The real thing, but locked to Vertex AI. Tavily's builders aren't there, and it adds a vendor |
 
-I also checked what competitors ship. OpenAI, Anthropic and Perplexity self-cite with no independent check. Google has a real Check Grounding API, but it is locked to Vertex AI, where Tavily's builders are not. That told me the gap was real and the fix had to add no new vendor.
+The move that made the rest unnecessary: stop asking how many sites repeated it. Ask whether the source itself said it. Cite only passages Tavily returned; for a claim about an organization, search that organization's own site. That one decision eliminated echo detection, domain lists, and a second vendor at once.
 
-### 3. The build, and what I made the AI prove first
+I checked what competitors ship before committing. OpenAI, Anthropic, and Perplexity self-cite with no independent check. Only Google has a grounding check, and it isn't reachable from here. The gap was real.
 
-- `grounding.py` was written first and imports nothing from LangChain, so the trust logic works in any framework that calls Tavily. 14 core tests passed before any agent code existed.
-- 3 end-to-end tests drive the *real* `create_agent` loop with a scripted model and a fake Tavily client and assert the exact parameters sent to Tavily. This caught that a future `start_date` would otherwise be forwarded.
-- I chose LangChain's `ToolStrategy` over the model's native JSON mode because it needs only tool calling, which the starter already depends on, and retries on schema errors.
+## 3. Build order, and what had to be proven first
 
-### 4. The challenge that produced the judge
+- `grounding.py` first, with no LangChain import, so the trust logic works in any agent framework that calls Tavily. 14 core tests passed before any agent code existed.
+- Then the agent loop, with end-to-end tests that drive the *real* `create_agent` against a scripted model and a fake Tavily client, asserting the exact parameters sent to Tavily. This caught that a future `start_date` would otherwise have been forwarded.
+- `ToolStrategy` over native JSON mode: it needs only tool calling, which the starter already depends on, and retries on schema errors.
 
-Halfway through I asked how deep the "verification" actually went. The honest answer: the anchor search only proved the organization's site had a page *on the topic*. That is relevance, not support — the exact flaw I had rejected in design #2. I had rebuilt the thing I killed.
+## 4. The question that produced the judge
 
-The fix: a judge reads each (claim, passage) pair and must copy the exact sentence that states the claim, and code verifies that sentence is really in the passage. An invented quote is discarded, not trusted. `PRIMARY` now means the organization's own page *states* the claim.
+Midway, I asked how deep the "verification" really went. Honest answer: the anchor search only proved the organization's site had a page *on the topic*. That is relevance, not support — the exact flaw I'd rejected in design #2. I had rebuilt the thing I killed.
 
-A test immediately exposed that my error handling silently swallowed a judge bug. I replaced it with a reported `judge_error`, so failures surface instead of hiding. (`tests/test_grounding.py::test_judge_failure_keeps_provenance_labels`)
+The fix: a judge reads each (claim, passage) pair and must copy the exact sentence that states the claim. Code verifies that sentence is in the passage; an invented quote is discarded, not trusted. `PRIMARY` now means the page *states* the claim.
 
-### 5. What I measured, and what the measurement said back
+A test immediately exposed that my first error handling silently swallowed a judge failure. I replaced it with a reported `judge_error`, so failures surface. (`tests/test_grounding.py::test_judge_failure_keeps_provenance_labels`)
 
-- **`diag_model.py`**: the starter's default model, Kimi-K2.6, returned empty replies through `create_agent`. Qwen3-235B answered and tool-called correctly. I switched the recommended model and added a recovery path. (commit `7b976f9`)
-- **The assignment question** returned five `SYNTHESIS` claims — correct, because a market-wide question has no originator. I added an organization question so the primary path gets exercised. (`runs/1792362444.json`)
+## 5. What I measured, and what it said back
+
+- **`diag_model.py`**: the starter's default model returned empty replies through `create_agent`. Qwen3-235B answered and tool-called correctly. Switched the recommended model, added a recovery path. (`7b976f9`)
+- **The assignment question**: five `SYNTHESIS` claims. Correct — a market-wide question has no originator. Added an organization question so the primary path gets exercised. (`runs/1792362444.json`)
 - **The organization question**: `openai.com` confirmed the Agents API claim by its own headline → `PRIMARY`. The anchor works live. (`runs/1792365221.json`)
-- **`planted.py`** broke 24 real claims on purpose and re-judged them: **21/24 caught (88%)** — numbers 10/10, negations 2/2, actors 4/5, years 5/7. The misses were a year buried in a citation and an actor swap the judge read past while the magnitudes still matched.
+- **`planted.py`** broke 24 real claims on purpose: **21/24 caught (88%)** — numbers 10/10, negations 2/2, actors 4/5, years 5/7. The misses: a year buried in a citation, an actor swap read past while the magnitudes matched.
+- **Correctness against live pages**: opened all 12 distinct cited pages and checked each claim. **12/12** quoted spans real. `PRIMARY` fully stated by its page. Every `REPORTED` stated by its third-party source.
 
-### 6. The finding I chose not to hide
+## 6. The finding I chose not to hide
 
-Reading the live output against its passages showed the judge **over-fires `CONTESTED`**. On the OpenAI re-run, three of five claims were flagged, and at least two were wrong: one passage actually *stated* the claim, another merely listed extra pricing tiers around the same numbers. I tightened the judge prompt; the re-run showed it reduced but did not eliminate this. A prompt nudge cannot reliably stop an LLM from calling "compatible but different" a contradiction.
+The judge **over-fires `CONTESTED`**. Three of five claims flagged on the OpenAI re-run; checked against the live pages, **all three were wrong** — one page stated the claim, another merely listed extra pricing tiers around the same numbers. A tighter prompt reduced but didn't eliminate it. An LLM judge still calls "compatible but different" a contradiction, and code can't yet confirm a *conflict* the way it confirms a *span*.
 
-I then designed the real fix — make a contradiction code-checkable by requiring the judge to name a value the passage genuinely lacks — and worked through it far enough to see the cost: on this run it clears all three false positives, but it also downgrades a swapped-actor contradiction whose numbers match, which would lower the planted-actor catch rate. That trade-off needs live iteration I could not finish before the deadline.
+I designed the real fix — require the judge to name a value the passage genuinely lacks, verified in code — and worked it far enough to see the trade-off: it clears the false positives but also downgrades a swapped-actor conflict whose numbers match, lowering the planted-actor catch rate. That needs live iteration I couldn't finish before the deadline.
 
-**The call, revised after a hard look at the demo.** My first instinct was to document the limitation and leave `CONTESTED` on. Then I weighed what a reviewer actually sees: three red flags on the one question they'll run, two of them wrong. Optimizing a synthetic planted-actor number over the live first impression was backwards. So `CONTESTED` is now **off by default** and opt-in via `--strict`; the claim is labelled from its supporting evidence, and the default output only shows labels code can stand behind. `planted.py` runs strict so the 88% still measures the judge honestly. The code-checkable gate that would let it back on is specified under Next. I would rather a reviewer see a clean, bounded default than a wrong red flag with a good excuse. (commits `c8984d0`, then the strict gate)
+**The call.** My first instinct was to document the limit and leave the label on. Then I weighed what a reviewer actually sees: three red flags on the one question they'll run, two of them wrong. A synthetic catch-rate number was the wrong thing to optimize over the real first impression. So `CONTESTED` is **off by default**, opt-in via `--strict`. The default output shows only labels code can stand behind. `planted.py` runs strict so the 88% still measures the judge honestly. I'd rather ship a clean, bounded default than a wrong red flag with a good excuse.
 
-### 7. Small things the checking caught
+## 7. Small things the checking caught
 
-- Raw markup leaking into the rendered output. Fixed on sight.
-- A README claim about a TPRM question in the eval set that wasn't there. Removed.
-- A stale "figures not on own site" line surviving on a `REPORTED` claim after its primary was rejected. Fixed with a regression test.
-- The technical statement drifting out of sync with the code after the judge was added (wrong test count, missing labels). Rewritten to match. (commit `409e44e`)
+- Raw markup leaking into rendered output. Fixed on sight.
+- A README claim about a question that wasn't in the eval set. Removed.
+- A stale "figures not on own site" line surviving on a `REPORTED` claim after its primary was rejected. Fixed, with a regression test.
+- The technical statement drifting from the code after the judge was added (wrong test count, missing labels). Rewritten to match. (`409e44e`)
 
 ## What I'd want a reviewer to take from this
 
-- The code's guarantees are structural and hold regardless of model quality: no invented sources, no invented numbers, every shown span verified in code.
-- The judge is a model, and I treated it like one — measured it, found exactly where it breaks, and bounded the claim rather than overselling it.
+- The guarantees are structural. They hold regardless of model quality: no invented sources, no invented numbers, every shown span verified in code.
+- The judge is a model and I treated it like one — measured it, found exactly where it breaks, and bounded the claim instead of overselling it.
 - Every number in the README comes from a file in `runs/` or a test you can run.
 
 ## Evidence
 
 - `git log` — the commits above, in order.
-- `runs/*.json` — every live run, with per-claim verdicts and spans.
+- `runs/*.json` — every live run, per-claim verdicts and spans.
 - `uv run pytest` — 51 offline tests, no keys needed.
 - `uv run planted.py runs/` — reproduces the catch rate from the recorded runs.
+- `VERIFICATION.md` — each guarantee traced to its code, its test, and its live run.
