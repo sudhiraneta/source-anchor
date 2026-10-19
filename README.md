@@ -84,6 +84,19 @@ Runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 re
 - **Traceability.** Across every run, no claim cited a source that wasn't returned, no claim carried a figure absent from its passages, and every shown span was verified present in its passage. Claims the model couldn't ground were dropped and listed.
 - **The primary-source anchor works, in the shipped default.** A run of the final code on *"What did OpenAI announce for its API this year?"* returned 1 `PRIMARY`, 1 `PRIMARY*` (`community.openai.com` states the Sol/Luna rollout; one date digit wasn't in the quoted text), 2 `REPORTED`, 1 `SYNTHESIS`, and **0 `CONTESTED`** — four labels exercised, no wrong flag. Two claims that reached `PRIMARY` on an earlier run came back `REPORTED` here because Tavily returned different own-site pages: search variance, failing in the safe direction (never a false `PRIMARY`).
 - **Changed-number detection.** `planted.py` broke 24 claims on purpose: **21/24 caught (88%)** — changed numbers **10/10**, negations 2/2, swapped actors 4/5, shifted years 5/7.
+
+**Correctness, checked against the live source pages.** Every number above measures the *checker*. This measures whether the labels are *right*: I fetched each cited page directly (the live page, not Tavily's snippet) and checked the claim against it, for all 12 distinct claims across the 4 recorded runs.
+
+| What was checked | Result |
+|---|---|
+| Quoted span actually on the cited page | **12/12.** No fabricated source, no misquote, in any run. |
+| `PRIMARY` (Agents API, openai.com) | Fully stated by the page: public beta, Sept 10 2026, Codex harness, managed by OpenAI. |
+| `PRIMARY*` (Sol/Luna, community.openai.com) | Rollout date, tiers, and lower cost are on the page. One sub-clause, "trained with similar methods as Astra," is only on the third-party source — the writer fused a third-party detail into a primary-labelled sentence. The quoted span is still on the page; the label is defensible; the sentence over-reaches by one clause. |
+| `REPORTED` (×4) | Every one is stated by its third-party source. In two cases the organization's site *also* stated it but that run's search didn't surface the page: conservative, never a false `PRIMARY`. |
+| `SYNTHESIS` (×6) | Every one is stated by its cited source. |
+| `CONTESTED` (×3, strict mode only) | **All three confirmed wrong by the live pages.** The changelog *supports* the $2/$10 pricing; the Astra page carries the Sept 22 Sol/Luna update and contradicts nothing; the DevDay page states 300 tok/s for Astra in Codex. None of the three passages conflicted with its claim. This is the direct evidence behind gating `CONTESTED` off. |
+
+Two things the check surfaced that the agent couldn't have: the Ultrafast "October 8" date exists only in a third-party article (the OpenAI page is dated Sept 29), and the market-size source gives 14.2% CAGR in its body and 14.10% in its own FAQ. Both are source-side facts the labels correctly route to the reader rather than resolve.
 - **Market questions behave correctly.** *"What changed in the AI search market this year?"* returned five `SYNTHESIS` claims: a market-wide question has no originator, so the primary path correctly never fires.
 
 **What is noisy, and what I did about it: the `CONTESTED` label over-fires.** On the OpenAI re-run, three of five claims were marked `CONTESTED` and at least two were wrong:
@@ -129,6 +142,8 @@ Rates from Tavily's [credits page](https://docs.tavily.com/documentation/api-cre
 
 ## Verification
 
+The full evidence chain, guarantee by guarantee, is in [`VERIFICATION.md`](VERIFICATION.md). In brief:
+
 - **51 offline tests** (`uv run pytest`): core logic, the judge (span verification, contradiction over support, invented spans discarded, failure reported not hidden), the real `create_agent` loop with a scripted model and a fake Tavily client asserting the exact Tavily parameters, the planted-error harness, and **12 research-concise question shapes** (`tests/test_scenarios.py`: market trend, single-org announcement, own-site silent, topical-but-not-stating, false premise, invented figure, multi-org, stale window, >5 claims, judge finds nothing, contradiction default vs `--strict`, syndicated reprints) each checked against its designed label.
 - **Tavily client read directly** to confirm parameter pass-through; **credit rates and the feedback endpoint** checked against the docs.
 - **Live:** the two runs above, plus `diag_model.py` reproducing the Kimi failure that motivated the recovery path.
@@ -156,3 +171,4 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces
 | `diag_model.py` | Two-call check of how a Nebius model behaves. |
 | `tests/` | 51 offline tests. |
 | `TECHNICAL_STATEMENT.md`, `BUILD_LOG.md` | Approach and value; how it was built, decision by decision. |
+| `VERIFICATION.md` | Each guarantee traced to the code that produces it, the test that proves it, and the live run that shows it. |
