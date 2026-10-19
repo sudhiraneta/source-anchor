@@ -1,13 +1,45 @@
+<div align="center">
+
 # Source Anchor
 
-A Tavily research agent whose every claim is traceable: it cites a passage Tavily returned, a judge quotes the sentence that states it, and a label says whether the organization itself or only third parties said it.
+**A research agent where every claim shows its work.**
+
+It cites a passage Tavily actually returned, a judge quotes the exact sentence that states the claim, and a label tells you whether the organization itself said it — or only a blog did.
+
+![tests](https://img.shields.io/badge/tests-51_passing-brightgreen)
+![python](https://img.shields.io/badge/python-3.11+-blue)
+![framework](https://img.shields.io/badge/core-no_LangChain_dependency-orange)
+![built on](https://img.shields.io/badge/built_on-Tavily_%2B_Nebius-black)
+
+</div>
+
+> An answer you have to re-check is not an answer. It's homework with a confident tone. Source Anchor makes every sentence auditable — so the reader checks the two claims that are flagged, not all twenty sources.
+
+```mermaid
+flowchart LR
+    Q[Question] --> S[Search<br/>date-windowed]
+    S --> P["Passages<br/>P1, P2, P3 ..."]
+    P --> W[Model writes claims<br/>each cites passage IDs]
+    W --> D{Valid ID?}
+    D -- no --> X[Dropped & listed]
+    D -- yes --> A[Anchor search<br/>on the org's own site]
+    A --> J[Judge quotes the sentence<br/>code verifies it's in the passage]
+    J --> L[Label]
+    L --> P1[PRIMARY]
+    L --> P2[PRIMARY*]
+    L --> R[REPORTED]
+    L --> SY[SYNTHESIS]
+    L --> U[UNSUPPORTED]
+```
+
+### Quickstart
 
 ```bash
 cp .env.example .env     # add TAVILY_API_KEY and NEBIUS_API_KEY (lowercase also works)
 uv run research_agent.py "What did OpenAI announce for its API this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
 uv run pytest            # 51 offline tests, no keys needed
 uv run planted.py runs/  # catch rate on deliberately broken claims (no credits)
-# add --strict to research_agent.py to also show CONTESTED (off by default; see Live results)
+# --strict also shows CONTESTED (off by default — the judge over-fires it; see Live results)
 ```
 
 ## Before and after
