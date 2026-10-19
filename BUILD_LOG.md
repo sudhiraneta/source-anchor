@@ -76,5 +76,5 @@ I then designed the real fix — make a contradiction code-checkable by requirin
 
 - `git log` — the commits above, in order.
 - `runs/*.json` — every live run, with per-claim verdicts and spans.
-- `uv run pytest` — 38 offline tests, no keys needed.
+- `uv run pytest` — 51 offline tests, no keys needed.
 - `uv run planted.py runs/` — reproduces the catch rate from the recorded runs.

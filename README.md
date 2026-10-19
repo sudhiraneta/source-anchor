@@ -5,7 +5,7 @@ A Tavily research agent whose every claim is traceable: it cites a passage Tavil
 ```bash
 cp .env.example .env     # add TAVILY_API_KEY and NEBIUS_API_KEY (lowercase also works)
 uv run research_agent.py "What did OpenAI announce for its API this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
-uv run pytest            # 38 offline tests, no keys needed
+uv run pytest            # 51 offline tests, no keys needed
 uv run planted.py runs/  # catch rate on deliberately broken claims (no credits)
 # add --strict to research_agent.py to also show CONTESTED (off by default; see Live results)
 ```
@@ -122,7 +122,7 @@ Rates from Tavily's [credits page](https://docs.tavily.com/documentation/api-cre
 
 ## Verification
 
-- **38 offline tests** (`uv run pytest`): core logic, the judge (span verification, contradiction over support, invented spans discarded, failure reported not hidden), the real `create_agent` loop with a scripted model and a fake Tavily client asserting the exact Tavily parameters, and the planted-error harness.
+- **51 offline tests** (`uv run pytest`): core logic, the judge (span verification, contradiction over support, invented spans discarded, failure reported not hidden), the real `create_agent` loop with a scripted model and a fake Tavily client asserting the exact Tavily parameters, the planted-error harness, and **12 research-concise question shapes** (`tests/test_scenarios.py`: market trend, single-org announcement, own-site silent, topical-but-not-stating, false premise, invented figure, multi-org, stale window, >5 claims, judge finds nothing, contradiction default vs `--strict`, syndicated reprints) each checked against its designed label.
 - **Tavily client read directly** to confirm parameter pass-through; **credit rates and the feedback endpoint** checked against the docs.
 - **Live:** the two runs above, plus `diag_model.py` reproducing the Kimi failure that motivated the recovery path.
 
@@ -147,5 +147,5 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces
 | `planted.py` | Planted-error catch rate from recorded runs. |
 | `eval.py`, `eval_questions.txt` | Traceability eval over a question set. |
 | `diag_model.py` | Two-call check of how a Nebius model behaves. |
-| `tests/` | 38 offline tests. |
+| `tests/` | 51 offline tests. |
 | `TECHNICAL_STATEMENT.md`, `BUILD_LOG.md` | Approach and value; how it was built, decision by decision. |
