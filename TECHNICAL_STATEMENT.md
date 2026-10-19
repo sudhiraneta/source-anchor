@@ -1,50 +1,82 @@
-# Technical Statement
+# Source Anchor
 
-## The problem, tied to Tavily's business
+## The moment
 
-Tavily is paid when agents built on it run in production. The wall between a demo and production is not search quality; it is that a team cannot approve an agent whose answers nobody can audit. The starter shows why an answer can't be trusted: it doesn't know today's date, so "this year" is meaningless; its sources are a URL list at the end, so no one can tell which link backs which sentence, or whether a sentence is backed at all; and for "what changed" questions, ten sites repeating one rumor look like ten sources.
+You ask a research agent what changed this year. It gives you five confident sentences and a list of links.
 
-So the reader re-checks every claim by hand, and an answer you must re-check saves no time. That is the adoption problem: a solo builder can't ship an agent their users trust, and an enterprise can't put one past review. Trust is the gate to production, and production is what consumes credits.
+Now you have to check all five. Which link backs which sentence? Did the company say that, or did a blog say the company said that? Is that number real?
 
-## The approach
+An answer you have to re-check is not an answer. It is homework with a confident tone.
 
-Every claim is traceable, and the agent guarantees four things. Each is checked in code against text already in memory, so the guarantees hold regardless of model quality.
+That is why agents stall in pilot. Not because search is weak, but because no one can approve an answer they can't audit. For Tavily, that wall is the business: it is paid when agents reach production, and trust is the gate.
 
-1. **No invented sources.** A claim may only cite passage IDs (`[P1]`, `[P2]`...) from results Tavily actually returned. A claim with no valid ID is dropped and listed as dropped.
-2. **No misquoted sources.** A judge reads each (claim, passage) pair and must copy the exact sentence that states the claim. Code checks that sentence is really in the passage; a quote that isn't there is discarded, not trusted. This is what turns "traceable" into "checked": a topical hit on the organization's site no longer earns a primary label unless the page actually states the claim.
-3. **Who said it.** For a claim about one organization, one Tavily search restricted to that organization's own site (`include_domains`, `restrict`) decides whether the originator said it or only the press did.
-4. **No invented numbers or stale windows.** Figures in the claim are checked against the passages; today's date goes in the prompt, the proposed `start_date` is validated in code, and a claim whose sources all predate the window is flagged.
+## The idea
 
-Each claim gets one label: `PRIMARY`, `PRIMARY*` (event stated, a figure only elsewhere), `REPORTED`, `SYNTHESIS` (market-level, no single owner), `CONTESTED` (opt-in via `--strict`: a cited passage appears to conflict; off by default because the judge over-fires it — see Verification), or `UNSUPPORTED` (no cited passage states it). The answer stays short: one summary sentence and at most five claims.
+Make every sentence show its work.
 
-## Thought process
+Not a link at the bottom. The actual passage, next to the claim, with a label that says who said it.
 
-I worked through and rejected several designs, each for a concrete reason:
+```
+PRIMARY   OpenAI announced the public beta of its Agents API on September 10, 2026.
+          openai.com: "Introducing the Agents API. Build and run cloud agents with the
+          Codex harness, fully managed by OpenAI."
 
-- **String-match a model-produced quote.** Brittle; flags correct paraphrases.
-- **Re-search each claim and trust the relevance score.** Relevance is not support; a wrong date on a real event still ranks high.
-- **Rank sources by a curated list of trusted domains.** Subjective, never complete, and builders won't adopt a pattern that needs curation.
-- **Count how many domains agree.** Forty reprints of one press release look like forty sources.
-- **Google's Check Grounding API.** The gold standard, but locked to Vertex AI, where Tavily's builders aren't.
+REPORTED  GPT-6.1 Sol launched September 29, priced at $2 per million input tokens.
+          tech-insider.org states this. OpenAI's own site does not.
+```
 
-The key move was replacing "how many sites repeated it" with "did the source itself say it", verified by a quoted span. `PRIMARY` means the organization said it, not that it is true: a boundary the write-up and the output both state.
+The reader stops re-checking everything. They check the ones that say `REPORTED`.
 
-## The value
+## Four promises, kept by code
 
-- **Technical:** unsupported claims cannot reach the reader unnoticed, and every claim carries an audit record (passage, URL, date, label, quoted span) saved as JSON in `runs/`. The trust logic (`grounding.py`) imports nothing from LangChain, so the same functions work with the Vercel AI SDK, OpenAI Agents, or a hand-written loop.
-- **For builders:** a solo developer gets a review layer without building one; an enterprise gets the audit trail review processes demand.
-- **For Tavily:** a reusable recipe on features most builders never touch (`include_domains` + `restrict`, `chunks_per_source`, `start_date`), and an ecosystem loop: the per-claim labels map one-to-one onto Tavily's [Feedback endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/feedback) (`used_ids`, `used_citations`, per-result scores), which its docs call the signal it uses to improve ranking. Better labels for the user and better training signal for Tavily are the same data.
+**No invented sources.** A claim may only cite passages Tavily actually returned. Cite one that doesn't exist, and the claim is dropped.
 
-## Verification
+**No misquotes.** A judge must copy the exact sentence that states the claim. Code confirms that sentence is in the passage. If it isn't, the verdict is discarded.
 
-- **51 offline tests** (`uv run pytest`), including the real `create_agent` loop with a scripted model and a fake Tavily client, which asserts the exact parameters sent to Tavily (`start_date`, `chunks_per_source`, `include_domains` + `restrict`), the judge (span verification, contradiction over support, invented spans discarded, judge failure reported not hidden), and the planted-error harness.
-- **Tavily client read directly** to confirm `start_date`, `include_domains`, `include_domains_mode` are named parameters and other keys pass through.
-- **Live finding:** the starter's default model, Kimi-K2.6, returned empty replies through `create_agent` on Nebius (`diag_model.py` reproduces it). `Qwen/Qwen3-235B-A22B-Instruct-2507` answered and tool-called correctly, so it is the recommended model, and a recovery path handles a model that ends without calling the answer tool. On the assignment's market-level question, all five claims came back `SYNTHESIS` (no single originator to anchor to) with every span verified; an organization-specific question exercises the `PRIMARY`/`REPORTED` path. On an organization question ("What did OpenAI announce for its API this year?") the labels split `PRIMARY` / `REPORTED` / `CONTESTED`, with `openai.com` confirming the Agents API claim by its own headline. `planted.py` then broke 24 claims from both runs on purpose; the judge caught **21 of 24 (88%)**: 10/10 changed numbers, 2/2 negations, 4/5 swapped actors, 5/7 shifted years. The honest split: the judge is reliable at *absence* (unsupported/dropped) and at *changed magnitudes*, and unreliable at *conflict* — on the OpenAI re-run it marked three of five claims `CONTESTED`, at least two wrongly (a passage that states the claim, and a passage that merely lists extra pricing tiers). A prompt instruction reduced but did not remove this, so `CONTESTED` is off by default and the claim is labelled from its supporting evidence; `--strict` shows it, and `planted.py` measures it in strict mode. The code-checkable contradiction gate that would fix it, and the planted-actor trade-off that kept me from shipping it before the deadline, are in the README. I would rather ship a measured limitation than an untested heuristic.
+**Who said it.** For a claim about an organization, one search restricted to that organization's own site. The label says whether the originator said it or only the press did.
 
-## Limits
+**No invented numbers.** Every figure in a claim is checked against the passages. A number no source contains is flagged.
 
-Every label is about the passages, never about the world. The agent does not check truth (a press release can be wrong) or currency (a price can change after the crawl); it does not check completeness (a missing change isn't flagged); the judge is itself a model, made checkable by the quoted span but not independent; "the organization's own site" is the wrong primary source for funding, regulation and compliance questions (the claim-kind table in the README is the planned fix); a wrong domain guess becomes `REPORTED`, never a false `PRIMARY`; and `published_date` is Tavily's estimate.
+These hold no matter how good the model is. They are checked in code, on text already in memory.
 
-## Observability
+## What we rejected, and why
 
-`grounding.py` emits a structured `Report`; the agent writes a full JSON record per run to `runs/`. With `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` set, LangChain traces the agent loop, and the anchor search and judge (which run outside that loop) are decorated with LangSmith's `@traceable`, so they appear in the same trace. The decorator is a no-op when langsmith is not installed, so it is never a hard dependency.
+We tried the obvious things first.
+
+String-match the model's quotes: brittle, flags correct paraphrases. Trust Tavily's relevance score as proof: relevance is not support. Count how many sites agree: forty reprints of one press release are still one source. A list of trusted domains: nobody adopts a pattern that needs hand-curation.
+
+Google ships a real grounding check. It is locked to Vertex AI, where Tavily's builders are not.
+
+The move that made the rest unnecessary: stop asking how many sites repeated it. Ask whether the source itself said it.
+
+## Measured, not asserted
+
+- **12 of 12** quoted spans, across every live run, found on their actual source pages.
+- **88%** of claims we deliberately broke — wrong number, wrong company, wrong year — caught. Wrong numbers: 10 of 10.
+- The `PRIMARY` label, checked against the live openai.com page: fully stated.
+
+## The thing we turned off
+
+The judge can also say a passage *contradicts* a claim. On the live run it did so three times. All three were wrong. None of the passages conflicted with its claim; two stated the claim outright, with extra detail the judge mistook for a conflict.
+
+We verified that against the real pages. Then we turned the label off by default.
+
+A red flag you have to disprove is worse than no flag. The default output shows only labels the code can stand behind. `--strict` turns contradictions back on. The fix that would make them reliable is specified, and it will ship when it is measured, not before.
+
+## What it costs
+
+About seven Tavily credits and three to five model calls per answer. Roughly double the starter's latency. One file of trust logic, `grounding.py`, with no LangChain dependency. It drops into any agent that calls Tavily.
+
+## What it does not do
+
+It does not know if the source is right. `PRIMARY` means the organization said it. It does not know what it didn't find. And the same question on two days can return different pages, so two claims moved from `PRIMARY` to `REPORTED` between runs. Always in the safe direction. Never a false `PRIMARY`.
+
+## Why this matters to Tavily
+
+Every label the agent produces is also a signal Tavily's Feedback endpoint accepts: which result was used, which was quoted, which was the originator. Most agents can't send that because they don't know. This one does, per claim.
+
+The user's trust and Tavily's ranking signal are the same data. Computed once.
+
+---
+
+*51 tests, four live runs, one correctness check against the live pages. The full evidence chain is in `VERIFICATION.md`. How it was built, decision by decision, is in `BUILD_LOG.md`.*
