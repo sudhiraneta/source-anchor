@@ -253,17 +253,30 @@ def judge_items(claims: list[CheckedClaim], max_passages: int = 3) -> list[Judge
     return items
 
 
-def apply_verdicts(claims: list[CheckedClaim], verdicts: Iterable[Verdict]) -> None:
+def apply_verdicts(
+    claims: list[CheckedClaim],
+    verdicts: Iterable[Verdict],
+    surface_contradictions: bool = False,
+) -> None:
     """Keep only verdicts whose span really appears in the passage, then relabel.
 
     The span is what makes the judge checkable: a verdict the code can't find in
     the passage is discarded rather than trusted.
+
+    Contradictions are opt-in. Live runs showed the judge calling compatible
+    passages (same facts plus extra detail) "contradicts" about two times in
+    three, and code cannot yet confirm a conflict the way it confirms a span.
+    So by default a "contradicts" verdict is dropped and the claim is labelled
+    from its supporting evidence only. Pass surface_contradictions=True (the
+    CLI's --strict, and planted.py) to show CONTESTED.
     """
     by_id = {(i, p.id): p for i, c in enumerate(claims) for p in ([c.primary] if c.primary else []) + c.evidence}
     for verdict in verdicts:
         passage = by_id.get((verdict.claim_index, verdict.passage_id))
         if passage is None or not 0 <= verdict.claim_index < len(claims):
             continue
+        if verdict.label == "contradicts" and not surface_contradictions:
+            continue  # unconfirmed by code: not shown
         if verdict.label != "not_addressed":
             if not verdict.span.strip() or _normalize(verdict.span) not in _normalize(passage.text):
                 continue  # unverifiable span: treat as no verdict
@@ -296,6 +309,7 @@ def check_claims(
     anchor_search: AnchorSearch | None = None,
     window_start: date | None = None,
     judge: Judge | None = None,
+    surface_contradictions: bool = False,
 ) -> Report:
     claims: list[CheckedClaim] = []
     dropped: list[DraftClaim] = []
@@ -348,7 +362,7 @@ def check_claims(
 
     if judge and claims:
         try:
-            apply_verdicts(claims, judge(judge_items(claims)))
+            apply_verdicts(claims, judge(judge_items(claims)), surface_contradictions)
         except Exception as exc:
             # Best-effort: keep provenance labels, but never hide why the judge failed.
             report.judge_error = f"{type(exc).__name__}: {exc}"

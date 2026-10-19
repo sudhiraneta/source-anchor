@@ -151,7 +151,9 @@ def main(
                 continue
             batch = [rebuilt]
             try:
-                apply_verdicts(batch, judge(judge_items(batch)))
+                # Strict on purpose: this measures the judge's raw ability to spot
+                # a planted conflict, independent of the user-facing default.
+                apply_verdicts(batch, judge(judge_items(batch)), surface_contradictions=True)
             except Exception as exc:
                 console.print(f"[yellow]judge failed: {exc}[/yellow]")
                 continue

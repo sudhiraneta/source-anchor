@@ -190,7 +190,7 @@ def test_summary_counts():
 # ---- judge
 
 
-def judged(verdicts, *, drafts=None, anchor=None, registry=None):
+def judged(verdicts, *, drafts=None, anchor=None, registry=None, strict=False):
     """Run check_claims with a fake judge returning the given verdicts."""
     registry = registry or make_registry(NEWS)
     drafts = drafts or [DraftClaim("Nebius agreed to acquire Tavily for about $400 million.", ["P1"], "nebius.com")]
@@ -200,7 +200,7 @@ def judged(verdicts, *, drafts=None, anchor=None, registry=None):
         seen["items"] = items
         return verdicts(items) if callable(verdicts) else verdicts
 
-    report = check_claims(drafts, registry, anchor_search=anchor, judge=judge)
+    report = check_claims(drafts, registry, anchor_search=anchor, judge=judge, surface_contradictions=strict)
     return report, seen.get("items", [])
 
 
@@ -249,14 +249,26 @@ def test_primary_downgraded_when_own_site_does_not_state_claim():
     assert report.claims[0].figures_not_in_primary == []
 
 
-def test_contradiction_wins_over_support():
-    report, _ = judged(
-        lambda its: [
-            Verdict(0, its[0].passage.id, "supports", "about $400 million"),
-            Verdict(0, its[1].passage.id, "contradicts", "Token Factory platform"),
-        ],
-        drafts=[DraftClaim("Nebius agreed to acquire Tavily for about $400 million.", ["P1", "P2"], None)],
-    )
+CONFLICT = [
+    lambda its: [
+        Verdict(0, its[0].passage.id, "supports", "about $400 million"),
+        Verdict(0, its[1].passage.id, "contradicts", "Token Factory platform"),
+    ],
+]
+TWO_PASSAGE_DRAFT = [DraftClaim("Nebius agreed to acquire Tavily for about $400 million.", ["P1", "P2"], None)]
+
+
+def test_contradiction_is_dropped_by_default():
+    """Live runs showed the judge over-firing 'contradicts'; by default the claim
+    is labelled from its support only and the contradiction is not shown."""
+    report, _ = judged(CONFLICT[0], drafts=TWO_PASSAGE_DRAFT)
+    claim = report.claims[0]
+    assert claim.status is Status.SYNTHESIS and not claim.flagged
+    assert claim.contradicting == [] and len(claim.supporting) == 1
+
+
+def test_contradiction_wins_over_support_in_strict_mode():
+    report, _ = judged(CONFLICT[0], drafts=TWO_PASSAGE_DRAFT, strict=True)
     claim = report.claims[0]
     assert claim.status is Status.CONTESTED and claim.flagged
     assert len(claim.contradicting) == 1

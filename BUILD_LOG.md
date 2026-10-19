@@ -57,7 +57,7 @@ Reading the live output against its passages showed the judge **over-fires `CONT
 
 I then designed the real fix — make a contradiction code-checkable by requiring the judge to name a value the passage genuinely lacks — and worked through it far enough to see the cost: on this run it clears all three false positives, but it also downgrades a swapped-actor contradiction whose numbers match, which would lower the planted-actor catch rate. That trade-off needs live iteration I could not finish before the deadline.
 
-**The call:** ship the measured limitation, not the untested patch. `CONTESTED` is now presented as "inspect this," with both passages shown; the gate and its trade-off are specified under Next in the README. I would rather a reviewer see a known, bounded weakness than an unverified heuristic that moves the error somewhere I didn't measure. (commit `c8984d0`)
+**The call, revised after a hard look at the demo.** My first instinct was to document the limitation and leave `CONTESTED` on. Then I weighed what a reviewer actually sees: three red flags on the one question they'll run, two of them wrong. Optimizing a synthetic planted-actor number over the live first impression was backwards. So `CONTESTED` is now **off by default** and opt-in via `--strict`; the claim is labelled from its supporting evidence, and the default output only shows labels code can stand behind. `planted.py` runs strict so the 88% still measures the judge honestly. The code-checkable gate that would let it back on is specified under Next. I would rather a reviewer see a clean, bounded default than a wrong red flag with a good excuse. (commits `c8984d0`, then the strict gate)
 
 ### 7. Small things the checking caught
 

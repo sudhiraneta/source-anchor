@@ -7,6 +7,7 @@ cp .env.example .env     # add TAVILY_API_KEY and NEBIUS_API_KEY (lowercase also
 uv run research_agent.py "What did OpenAI announce for its API this year?" --model Qwen/Qwen3-235B-A22B-Instruct-2507
 uv run pytest            # 38 offline tests, no keys needed
 uv run planted.py runs/  # catch rate on deliberately broken claims (no credits)
+# add --strict to research_agent.py to also show CONTESTED (off by default; see Live results)
 ```
 
 ## Before and after
@@ -51,7 +52,7 @@ Every label is about the passages, never about the world. The agent cannot tell 
 | `PRIMARY*` | The own page states the event; a figure comes only from elsewhere. |
 | `REPORTED` | Third parties state it; the own site does not. |
 | `SYNTHESIS` | A market-level statement with no single owner, stated by a cited passage. |
-| `CONTESTED` | A cited passage *appears* to conflict — a flag to inspect, not a proof the claim is wrong. The judge over-fires here (see Live results); both passages are shown so a person decides. |
+| `CONTESTED` | **Opt-in (`--strict`).** A cited passage appears to conflict. Off by default because the judge over-fires it (see Live results); when shown, both passages appear so a person decides. |
 | `UNSUPPORTED` | No cited passage states the claim. |
 
 ## Design decisions, including the rejected ones
@@ -78,14 +79,16 @@ Runs on `Qwen/Qwen3-235B-A22B-Instruct-2507` (the starter's default Kimi-K2.6 re
 - **Changed-number detection.** `planted.py` broke 24 claims on purpose: **21/24 caught (88%)** — changed numbers **10/10**, negations 2/2, swapped actors 4/5, shifted years 5/7.
 - **Market questions behave correctly.** *"What changed in the AI search market this year?"* returned five `SYNTHESIS` claims: a market-wide question has no originator, so the primary path correctly never fires.
 
-**What is noisy, stated plainly: the `CONTESTED` label over-fires.** On the OpenAI re-run, three of five claims were marked `CONTESTED` and at least two are wrong:
+**What is noisy, and what I did about it: the `CONTESTED` label over-fires.** On the OpenAI re-run, three of five claims were marked `CONTESTED` and at least two were wrong:
 
 - Claim 2 (Sol/Luna released): the `openai.com` passage actually *states* it ("expanding our GPT-6 family with GPT-6 Sol and GPT-6 Luna"); the judge flagged an unrelated sentence about GPT-6 Astra as the conflict.
-- Claim 3 (pricing): the claim's "$2 in / $10 out" is *contained in* a passage that merely lists more tiers ("$2 input, $0.10 cached, $2.50 cache write, $10 output"). That is elaboration, not conflict.
+- Claim 3 (pricing): the claim's "$2 in / $10 out" is *contained in* a passage that merely lists more tiers ("$2 input, $0.10 cached, $2.50 cache write, $10 output"). Elaboration, not conflict.
 
-A prompt instruction ("extra detail is not a contradiction") reduced but did not eliminate this; an LLM judge still calls compatible-but-different passages a contradiction. So `CONTESTED` is presented as **"inspect this"**, with both passages shown, not as a verdict. The honest split: the judge is reliable at *absence* (unsupported, dropped) and at *changed magnitudes*, and unreliable at *conflict*.
+A prompt instruction ("extra detail is not a contradiction") reduced but did not eliminate this. An LLM judge still calls compatible-but-different a contradiction, and code cannot yet confirm a *conflict* the way it confirms a *span*.
 
-**The designed fix, and why it isn't shipped.** Make a contradiction code-checkable: have the judge name the claim value and the conflicting passage value, and in code require a value the passage genuinely lacks. On this run that fixes all three false positives — but it also downgrades a swapped-actor contradiction whose numbers still match the passage, which would lower the planted-actor catch rate. That trade-off needs live iteration I couldn't finish before the deadline, and shipping an untested heuristic that moves the error around is the wrong call. It is specified under Next.
+**So `CONTESTED` is off by default.** A "contradicts" verdict is dropped and the claim is labelled from its supporting evidence only; on that run the three claims fall to `PRIMARY`/`REPORTED` instead of showing a red flag the reader would have to disprove. `--strict` turns it back on. `planted.py` always runs strict, because it measures the judge's raw ability to spot a planted conflict, not the user-facing default; that is how the 88% is computed. The honest split: the judge is reliable at *absence* and at *changed magnitudes*, unreliable at *conflict*, and the default output only shows labels code can stand behind.
+
+**The real fix, specified under Next:** make a contradiction code-checkable by requiring the judge to name a value the passage genuinely lacks. It would let `CONTESTED` back on by default. I prototyped it far enough to see it also downgrades a swapped-actor conflict whose numbers match, so it needs live iteration before it ships.
 
 ## What it does not do
 
@@ -129,7 +132,7 @@ Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`; LangChain traces
 
 ## Next
 
-1. **Make `CONTESTED` code-checkable.** Have the judge name the claim value and the conflicting passage value; in code, require a value the passage genuinely lacks before showing a contradiction. This fixes the over-firing above; measure it against the planted-actor case before shipping, since it can also downgrade a real actor/date swap whose numbers match.
+1. **Make `CONTESTED` code-checkable, then turn it on by default.** Have the judge name the claim value and the conflicting passage value; in code, require a value the passage genuinely lacks. Measure against the planted-actor case first, since it can also downgrade a real actor/date swap whose numbers match.
 2. **Claim kinds:** one field per claim (`announcement`, `funding`, `regulation`, `compliance`, `live_state`, `market`) and a policy table that picks the right primary source per kind.
 3. **Feedback to Tavily** after each run (`used_ids`, per-result verdicts); text fields opt-in.
 4. **Show the searched domain** on `REPORTED`, so "they didn't say it" is distinct from "we looked in the wrong place".

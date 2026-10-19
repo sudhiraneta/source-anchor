@@ -252,6 +252,7 @@ def run_research(
     today: date | None = None,
     on_search: Callable[[str, str | None], None] | None = None,
     check_support: bool = True,
+    strict: bool = False,
 ) -> tuple[ResearchAnswer, Report, dict]:
     today = today or date.today()
     registry = PassageRegistry()
@@ -285,6 +286,7 @@ def run_research(
         build_anchor_search(client, registry, log),
         window,
         judge=build_judge(model, log) if check_support else None,
+        surface_contradictions=strict,
     )
     return answer, report, log
 
@@ -400,6 +402,7 @@ def main(
     model: Annotated[str, typer.Option(help="Nebius model name")] = DEFAULT_MODEL,
     save: Annotated[bool, typer.Option(help="Write a JSON record to runs/")] = True,
     check_support: Annotated[bool, typer.Option(help="Judge whether each cited passage states the claim")] = True,
+    strict: Annotated[bool, typer.Option(help="Also show CONTESTED. Off by default: the judge over-fires it (see README)")] = False,
 ) -> None:
     """Answer a question with claims anchored to Tavily passages and primary sources."""
     question_text = " ".join(question)
@@ -415,6 +418,7 @@ def main(
                 f"[yellow]search[/yellow] {q}" + (f" [dim](since {since})[/dim]" if since else ""), highlight=False
             ),
             check_support=check_support,
+            strict=strict,
         )
     except Exception as exc:  # surface provider errors plainly
         console.print(f"[bold red]Run failed:[/bold red] {exc}")
